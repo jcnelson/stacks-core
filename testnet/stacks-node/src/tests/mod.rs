@@ -66,6 +66,8 @@ pub mod neon_integrations;
 mod signer;
 mod stackerdb;
 
+pub mod wrb_integrations;
+
 // $ cat /tmp/out.clar
 pub const STORE_CONTRACT: &str = r#"(define-map store { key: (string-ascii 32) } { value: (string-ascii 32) })
  (define-public (get-value (key (string-ascii 32)))
