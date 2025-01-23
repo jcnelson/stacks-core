@@ -4388,7 +4388,7 @@ impl PeerThread {
             .node
             .rpc_bind
             .parse()
-            .unwrap_or_else(|_| panic!("Failed to parse socket: {}", &config.node.rpc_bind));
+            .unwrap_or_else(|e| panic!("Failed to parse socket: '{}', {:?}", &config.node.rpc_bind, &e));
 
         net.bind(&p2p_sock, &rpc_sock)
             .expect("BUG: PeerNetwork could not bind or is already bound");
