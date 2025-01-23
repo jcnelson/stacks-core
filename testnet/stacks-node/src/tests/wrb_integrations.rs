@@ -255,13 +255,39 @@ pub fn wrb_playground() {
         let info_before = get_chain_info_result(&naka_conf).unwrap();
         submit_tx(&http_origin, &contract_tx);
   
-        if false && i == 0 {
-            // Wait for the tenure change payload to be mined
+        if i == 0 {
+            let blocks_before = mined_blocks.load(Ordering::SeqCst);
+            let blocks_processed_before = coord_channel
+                .lock()
+                .expect("Mutex poisoned")
+                .get_stacks_blocks_processed();
             next_block_and(&mut btc_regtest_controller, 60, || {
-                let info = get_chain_info_result(&naka_conf).unwrap();
-                Ok(info.stacks_tip_height > info_before.stacks_tip_height)
+                let blocks_count = mined_blocks.load(Ordering::SeqCst);
+                let blocks_processed = coord_channel
+                    .lock()
+                    .expect("Mutex poisoned")
+                    .get_stacks_blocks_processed();
+                Ok(blocks_count > blocks_before && blocks_processed > blocks_processed_before)
             })
             .unwrap();
+
+            let blocks_processed_before = coord_channel
+                .lock()
+                .expect("Mutex poisoned")
+                .get_stacks_blocks_processed();
+            let mined_before = test_observer::get_mined_nakamoto_blocks();
+            let commits_before = commits_submitted.load(Ordering::SeqCst);
+            info!("----- Waiting for deploy txs to be mined -----");
+            wait_for(30, || {
+                let blocks_processed = coord_channel
+                    .lock()
+                    .expect("Mutex poisoned")
+                    .get_stacks_blocks_processed();
+                Ok(blocks_processed > blocks_processed_before
+                    && test_observer::get_mined_nakamoto_blocks().len() > mined_before.len()
+                    && commits_submitted.load(Ordering::SeqCst) > commits_before)
+            })
+            .expect("Timed out waiting for interim blocks to be mined");
         }
         else {
             // wait for it to be mined
