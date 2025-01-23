@@ -55,7 +55,7 @@ impl NeighborReplacements {
     }
 
     pub fn get_slot(&self, naddr: &NeighborAddress) -> Option<u32> {
-        self.replaced_neighbors.get(naddr).map(|slot| *slot)
+        self.replaced_neighbors.get(naddr).copied()
     }
 
     pub fn get_neighbor(&self, naddr: &NeighborAddress) -> Option<&Neighbor> {
@@ -110,7 +110,7 @@ pub trait NeighborWalkDB {
     fn lookup_stale_neighbors(
         &self,
         network: &PeerNetwork,
-        addrs: &Vec<NeighborAddress>,
+        addrs: &[NeighborAddress],
     ) -> Result<(HashMap<NeighborAddress, Neighbor>, Vec<NeighborAddress>), net_error>;
 
     /// Add a neighbor to the DB, or if there's no slot available for it, schedule it to be
@@ -320,7 +320,7 @@ impl NeighborWalkDB for PeerDBNeighborWalk {
     fn lookup_stale_neighbors(
         &self,
         network: &PeerNetwork,
-        addrs: &Vec<NeighborAddress>,
+        addrs: &[NeighborAddress],
     ) -> Result<(HashMap<NeighborAddress, Neighbor>, Vec<NeighborAddress>), net_error> {
         let network_id = network.bound_neighbor_key().network_id;
         let block_height = network.get_chain_view().burn_block_height;

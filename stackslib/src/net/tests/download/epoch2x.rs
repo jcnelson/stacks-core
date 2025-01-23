@@ -227,7 +227,7 @@ fn get_blocks_inventory(peer: &mut TestPeer, start_height: u64, end_height: u64)
         ic.get_stacks_header_hashes(
             num_headers + 1,
             &ancestor.consensus_hash,
-            &mut BlockHeaderCache::new(),
+            &BlockHeaderCache::new(),
         )
         .unwrap()
     };
@@ -280,11 +280,7 @@ where
 
     make_topology(&mut peer_configs);
 
-    let mut peers = vec![];
-    for conf in peer_configs.drain(..) {
-        let peer = TestPeer::new(conf);
-        peers.push(peer);
-    }
+    let mut peers: Vec<_> = peer_configs.into_iter().map(TestPeer::new).collect();
 
     let mut num_blocks = 10;
     let first_stacks_block_height = {
@@ -421,36 +417,34 @@ where
                 for b in 0..num_blocks {
                     if !peer_invs[i].has_ith_block(
                         ((b as u64) + first_stacks_block_height - first_sortition_height) as u16,
-                    ) {
-                        if block_data[b].1.is_some() {
-                            test_debug!(
-                                "Peer {} is missing block {} at sortition height {} (between {} and {})",
-                                i,
-                                b,
-                                (b as u64) + first_stacks_block_height - first_sortition_height,
-                                first_stacks_block_height - first_sortition_height,
-                                first_stacks_block_height - first_sortition_height
-                                    + (num_blocks as u64),
-                            );
-                            done = false;
-                        }
+                    ) && block_data[b].1.is_some()
+                    {
+                        test_debug!(
+                            "Peer {} is missing block {} at sortition height {} (between {} and {})",
+                            i,
+                            b,
+                            (b as u64) + first_stacks_block_height - first_sortition_height,
+                            first_stacks_block_height - first_sortition_height,
+                            first_stacks_block_height - first_sortition_height
+                                + (num_blocks as u64),
+                        );
+                        done = false;
                     }
                 }
                 for b in 1..(num_blocks - 1) {
                     if !peer_invs[i].has_ith_microblock_stream(
                         ((b as u64) + first_stacks_block_height - first_sortition_height) as u16,
-                    ) {
-                        if block_data[b].2.is_some() {
-                            test_debug!(
-                                "Peer {} is missing microblock stream {} (between {} and {})",
-                                i,
-                                (b as u64) + first_stacks_block_height - first_sortition_height,
-                                first_stacks_block_height - first_sortition_height,
-                                first_stacks_block_height - first_sortition_height
-                                    + ((num_blocks - 1) as u64),
-                            );
-                            done = false;
-                        }
+                    ) && block_data[b].2.is_some()
+                    {
+                        test_debug!(
+                            "Peer {} is missing microblock stream {} (between {} and {})",
+                            i,
+                            (b as u64) + first_stacks_block_height - first_sortition_height,
+                            first_stacks_block_height - first_sortition_height,
+                            first_stacks_block_height - first_sortition_height
+                                + ((num_blocks - 1) as u64),
+                        );
+                        done = false;
                     }
                 }
             }
@@ -511,7 +505,7 @@ where
     }
 
     drop(dns_clients);
-    for handle in dns_threads.drain(..) {
+    for handle in dns_threads.into_iter() {
         handle.join().unwrap();
     }
 
@@ -614,7 +608,7 @@ fn make_contract_call_transaction(
     let tx_cc = {
         let mut tx_cc = StacksTransaction::new(
             TransactionVersion::Testnet,
-            spending_account.as_transaction_auth().unwrap().into(),
+            spending_account.as_transaction_auth().unwrap(),
             TransactionPayload::new_contract_call(
                 contract_address,
                 contract_name,
@@ -904,7 +898,7 @@ pub fn test_get_blocks_and_microblocks_5_peers_star() {
                     peer_configs[i].add_neighbor(&peer_0);
                 }
 
-                for n in neighbors.drain(..) {
+                for n in neighbors.into_iter() {
                     peer_configs[0].add_neighbor(&n);
                 }
             },
@@ -1060,7 +1054,7 @@ pub fn test_get_blocks_and_microblocks_overwhelmed_connections() {
                     peer_configs[i].connection_opts.max_http_clients = 1;
                 }
 
-                for n in neighbors.drain(..) {
+                for n in neighbors.into_iter() {
                     peer_configs[0].add_neighbor(&n);
                 }
             },
@@ -1139,7 +1133,7 @@ pub fn test_get_blocks_and_microblocks_overwhelmed_sockets() {
                     peer_configs[i].connection_opts.max_sockets = 10;
                 }
 
-                for n in neighbors.drain(..) {
+                for n in neighbors.into_iter() {
                     peer_configs[0].add_neighbor(&n);
                 }
             },
@@ -1175,12 +1169,9 @@ pub fn test_get_blocks_and_microblocks_overwhelmed_sockets() {
             |peer| {
                 // check peer health
                 // nothing should break
-                match peer.network.block_downloader {
-                    Some(ref dl) => {
-                        assert_eq!(dl.broken_peers.len(), 0);
-                        assert_eq!(dl.dead_peers.len(), 0);
-                    }
-                    None => {}
+                if let Some(ref dl) = peer.network.block_downloader {
+                    assert_eq!(dl.broken_peers.len(), 0);
+                    assert_eq!(dl.dead_peers.len(), 0);
                 }
                 true
             },
@@ -1459,7 +1450,7 @@ pub fn test_get_blocks_and_microblocks_2_peers_download_multiple_microblock_desc
                         let (_, burn_header_hash, consensus_hash) =
                             peers[1].next_burnchain_block(burn_ops.clone());
 
-                        peers[1].process_stacks_epoch(&stacks_block, &consensus_hash, &vec![]);
+                        peers[1].process_stacks_epoch(&stacks_block, &consensus_hash, &[]);
 
                         TestPeer::set_ops_burn_header_hash(&mut burn_ops, &burn_header_hash);
 

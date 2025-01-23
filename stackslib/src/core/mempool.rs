@@ -492,35 +492,25 @@ impl FromStr for MemPoolWalkTxTypes {
     type Err = &'static str;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
-            "TokenTransfer" => {
-                return Ok(Self::TokenTransfer);
-            }
-            "SmartContract" => {
-                return Ok(Self::SmartContract);
-            }
-            "ContractCall" => {
-                return Ok(Self::ContractCall);
-            }
-            _ => {
-                return Err("Unknown mempool tx walk type");
-            }
+            "TokenTransfer" => Ok(Self::TokenTransfer),
+            "SmartContract" => Ok(Self::SmartContract),
+            "ContractCall" => Ok(Self::ContractCall),
+            _ => Err("Unknown mempool tx walk type"),
         }
     }
 }
 
 impl MemPoolWalkTxTypes {
     pub fn all() -> HashSet<MemPoolWalkTxTypes> {
-        [
+        HashSet::from([
             MemPoolWalkTxTypes::TokenTransfer,
             MemPoolWalkTxTypes::SmartContract,
             MemPoolWalkTxTypes::ContractCall,
-        ]
-        .into_iter()
-        .collect()
+        ])
     }
 
     pub fn only(selected: &[MemPoolWalkTxTypes]) -> HashSet<MemPoolWalkTxTypes> {
-        selected.iter().map(|x| x.clone()).collect()
+        selected.iter().copied().collect()
     }
 }
 
@@ -554,13 +544,7 @@ impl Default for MemPoolWalkSettings {
             consider_no_estimate_tx_prob: 5,
             nonce_cache_size: 1024 * 1024,
             candidate_retry_cache_size: 64 * 1024,
-            txs_to_consider: [
-                MemPoolWalkTxTypes::TokenTransfer,
-                MemPoolWalkTxTypes::SmartContract,
-                MemPoolWalkTxTypes::ContractCall,
-            ]
-            .into_iter()
-            .collect(),
+            txs_to_consider: MemPoolWalkTxTypes::all(),
             filter_origins: HashSet::new(),
             tenure_cost_limit_per_block_percentage: None,
         }
@@ -573,13 +557,7 @@ impl MemPoolWalkSettings {
             consider_no_estimate_tx_prob: 5,
             nonce_cache_size: 1024 * 1024,
             candidate_retry_cache_size: 64 * 1024,
-            txs_to_consider: [
-                MemPoolWalkTxTypes::TokenTransfer,
-                MemPoolWalkTxTypes::SmartContract,
-                MemPoolWalkTxTypes::ContractCall,
-            ]
-            .into_iter()
-            .collect(),
+            txs_to_consider: MemPoolWalkTxTypes::all(),
             filter_origins: HashSet::new(),
             tenure_cost_limit_per_block_percentage: None,
         }
@@ -1144,10 +1122,8 @@ fn db_get_nonce(conn: &DBConn, address: &StacksAddress) -> Result<Option<u64>, d
 #[cfg(test)]
 pub fn db_get_all_nonces(conn: &DBConn) -> Result<Vec<(StacksAddress, u64)>, db_error> {
     let sql = "SELECT * FROM nonces";
-    let mut stmt = conn.prepare(&sql).map_err(|e| db_error::SqliteError(e))?;
-    let mut iter = stmt
-        .query(NO_PARAMS)
-        .map_err(|e| db_error::SqliteError(e))?;
+    let mut stmt = conn.prepare(&sql).map_err(db_error::SqliteError)?;
+    let mut iter = stmt.query(NO_PARAMS).map_err(db_error::SqliteError)?;
     let mut ret = vec![];
     while let Ok(Some(row)) = iter.next() {
         let addr = StacksAddress::from_column(row, "address")?;
@@ -1454,7 +1430,7 @@ impl MemPoolDB {
         }
 
         let bloom_counter = BloomCounter::<BloomNodeHasher>::try_load(&conn, BLOOM_COUNTER_TABLE)?
-            .ok_or(db_error::Other(format!("Failed to load bloom counter")))?;
+            .ok_or(db_error::Other("Failed to load bloom counter".to_string()))?;
 
         Ok(MemPoolDB {
             db: conn,
@@ -1670,13 +1646,10 @@ impl MemPoolDB {
              FROM mempool
              WHERE fee_rate IS NULL
              ";
-        let mut query_stmt_null = self
-            .db
-            .prepare(&sql)
-            .map_err(|err| Error::SqliteError(err))?;
+        let mut query_stmt_null = self.db.prepare(&sql).map_err(Error::SqliteError)?;
         let mut null_iterator = query_stmt_null
             .query(NO_PARAMS)
-            .map_err(|err| Error::SqliteError(err))?;
+            .map_err(Error::SqliteError)?;
 
         let sql = "
             SELECT txid, origin_nonce, origin_address, sponsor_nonce, sponsor_address, fee_rate
@@ -1684,13 +1657,10 @@ impl MemPoolDB {
             WHERE fee_rate IS NOT NULL
             ORDER BY fee_rate DESC
             ";
-        let mut query_stmt_fee = self
-            .db
-            .prepare(&sql)
-            .map_err(|err| Error::SqliteError(err))?;
+        let mut query_stmt_fee = self.db.prepare(&sql).map_err(Error::SqliteError)?;
         let mut fee_iterator = query_stmt_fee
             .query(NO_PARAMS)
-            .map_err(|err| Error::SqliteError(err))?;
+            .map_err(Error::SqliteError)?;
 
         let stop_reason = loop {
             if start_time.elapsed().as_millis() > settings.max_walk_time_ms as u128 {
@@ -1713,22 +1683,18 @@ impl MemPoolDB {
                     // randomly selecting from either the null fee-rate transactions
                     // or those with fee-rate estimates.
                     let opt_tx = if start_with_no_estimate {
-                        null_iterator
-                            .next()
-                            .map_err(|err| Error::SqliteError(err))?
+                        null_iterator.next().map_err(Error::SqliteError)?
                     } else {
-                        fee_iterator.next().map_err(|err| Error::SqliteError(err))?
+                        fee_iterator.next().map_err(Error::SqliteError)?
                     };
                     match opt_tx {
                         Some(row) => (MemPoolTxInfoPartial::from_row(row)?, start_with_no_estimate),
                         None => {
                             // If the selected iterator is empty, check the other
                             match if start_with_no_estimate {
-                                fee_iterator.next().map_err(|err| Error::SqliteError(err))?
+                                fee_iterator.next().map_err(Error::SqliteError)?
                             } else {
-                                null_iterator
-                                    .next()
-                                    .map_err(|err| Error::SqliteError(err))?
+                                null_iterator.next().map_err(Error::SqliteError)?
                             } {
                                 Some(row) => (
                                     MemPoolTxInfoPartial::from_row(row)?,
@@ -2120,7 +2086,7 @@ impl MemPoolDB {
                 &StacksBlockId::new(tip_consensus_hash, tip_block_header_hash),
                 tip_consensus_hash,
             )
-            .map_err(|e| MemPoolRejection::FailedToValidate(e))?
+            .map_err(MemPoolRejection::FailedToValidate)?
             .ok_or(MemPoolRejection::NoSuchChainTip(
                 tip_consensus_hash.clone(),
                 tip_block_header_hash.clone(),

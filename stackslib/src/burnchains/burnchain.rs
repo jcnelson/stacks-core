@@ -136,7 +136,7 @@ impl BurnchainStateTransition {
             return Some(block_total_burns[0]);
         } else if block_total_burns.len() % 2 != 0 {
             let idx = block_total_burns.len() / 2;
-            return block_total_burns.get(idx).map(|b| *b);
+            return block_total_burns.get(idx).copied();
         } else {
             // NOTE: the `- 1` is safe because block_total_burns.len() >= 2
             let idx_left = block_total_burns.len() / 2 - 1;
@@ -151,7 +151,7 @@ impl BurnchainStateTransition {
         sort_tx: &mut SortitionHandleTx,
         burnchain: &Burnchain,
         parent_snapshot: &BlockSnapshot,
-        block_ops: &Vec<BlockstackOperationType>,
+        block_ops: &[BlockstackOperationType],
         missed_commits: &[MissedBlockCommit],
     ) -> Result<BurnchainStateTransition, burnchain_error> {
         // block commits discovered in this block.
@@ -269,8 +269,7 @@ impl BurnchainStateTransition {
                 let mut missed_commits_at_height =
                     SortitionDB::get_missed_commits_by_intended(sort_tx.tx(), &sortition_id)?;
                 if let Some(missed_commit_in_block) = missed_commits_map.remove(&sortition_id) {
-                    missed_commits_at_height
-                        .extend(missed_commit_in_block.into_iter().map(|x| x.clone()));
+                    missed_commits_at_height.extend(missed_commit_in_block.into_iter().cloned());
                 }
 
                 windowed_missed_commits.push(missed_commits_at_height);
@@ -976,7 +975,7 @@ impl Burnchain {
     }
 
     /// Sanity check -- a list of checked ops is sorted and all vtxindexes are unique
-    pub fn ops_are_sorted(ops: &Vec<BlockstackOperationType>) -> bool {
+    pub fn ops_are_sorted(ops: &[BlockstackOperationType]) -> bool {
         if ops.len() > 1 {
             for i in 0..ops.len() - 1 {
                 if ops[i].vtxindex() >= ops[i + 1].vtxindex() {
@@ -1128,7 +1127,7 @@ impl Burnchain {
             burnchain,
             &sortition_tip,
             None,
-            |_| {},
+            |_, _| {},
         )
     }
 

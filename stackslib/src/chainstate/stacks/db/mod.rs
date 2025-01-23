@@ -442,9 +442,8 @@ impl FromRow<StacksHeaderInfo> for StacksHeaderInfo {
             .parse::<u64>()
             .map_err(|_| db_error::ParseError)?;
 
-        let header_type: HeaderTypeNames = row
-            .get("header_type")
-            .unwrap_or_else(|_e| HeaderTypeNames::Epoch2);
+        let header_type: HeaderTypeNames =
+            row.get("header_type").unwrap_or(HeaderTypeNames::Epoch2);
         let stacks_header: StacksBlockHeaderTypes = {
             match header_type {
                 HeaderTypeNames::Epoch2 => StacksBlockHeader::from_row(row)?.into(),
@@ -1202,7 +1201,7 @@ impl StacksChainState {
         test_debug!("Open MARF index at {}", marf_path);
         let mut open_opts = MARFOpenOpts::default();
         open_opts.external_blobs = true;
-        let marf = MARF::from_path(marf_path, open_opts).map_err(|e| db_error::IndexError(e))?;
+        let marf = MARF::from_path(marf_path, open_opts).map_err(db_error::IndexError)?;
         Ok(marf)
     }
 
@@ -1227,7 +1226,7 @@ impl StacksChainState {
 
     fn parse_genesis_address(addr: &str, mainnet: bool) -> PrincipalData {
         // Typical entries are BTC encoded addresses that need converted to STX
-        let mut stacks_address = match LegacyBitcoinAddress::from_b58(&addr) {
+        let stacks_address = match LegacyBitcoinAddress::from_b58(&addr) {
             Ok(addr) => StacksAddress::from_legacy_bitcoin_address(&addr),
             // A few addresses (from legacy placeholder accounts) are already STX addresses
             _ => match StacksAddress::from_string(addr) {
@@ -1237,20 +1236,25 @@ impl StacksChainState {
         };
         // Convert a given address to the currently running network mode (mainnet vs testnet).
         // All addresses from the Stacks 1.0 import data should be mainnet, but we'll handle either case.
-        stacks_address.version = if mainnet {
-            match stacks_address.version {
+        let converted_version = if mainnet {
+            match stacks_address.version() {
                 C32_ADDRESS_VERSION_TESTNET_SINGLESIG => C32_ADDRESS_VERSION_MAINNET_SINGLESIG,
                 C32_ADDRESS_VERSION_TESTNET_MULTISIG => C32_ADDRESS_VERSION_MAINNET_MULTISIG,
-                _ => stacks_address.version,
+                _ => stacks_address.version(),
             }
         } else {
-            match stacks_address.version {
+            match stacks_address.version() {
                 C32_ADDRESS_VERSION_MAINNET_SINGLESIG => C32_ADDRESS_VERSION_TESTNET_SINGLESIG,
                 C32_ADDRESS_VERSION_MAINNET_MULTISIG => C32_ADDRESS_VERSION_TESTNET_MULTISIG,
-                _ => stacks_address.version,
+                _ => stacks_address.version(),
             }
         };
-        let principal: PrincipalData = stacks_address.into();
+
+        let (_, bytes) = stacks_address.destruct();
+        let principal: PrincipalData = StandardPrincipalData::new(converted_version, bytes.0)
+            .expect("FATAL: infallible constant version byte is not valid")
+            .into();
+
         return principal;
     }
 
@@ -1697,8 +1701,7 @@ impl StacksChainState {
                 &first_index_hash
             );
 
-            let first_root_hash =
-                tx.put_indexed_all(&parent_hash, &first_index_hash, &vec![], &vec![])?;
+            let first_root_hash = tx.put_indexed_all(&parent_hash, &first_index_hash, &[], &[])?;
 
             test_debug!(
                 "Boot code headers index_commit {}-{}",
@@ -1714,7 +1717,7 @@ impl StacksChainState {
             );
 
             StacksChainState::insert_stacks_block_header(
-                &mut tx,
+                &tx,
                 &parent_hash,
                 &first_tip_info,
                 &ExecutionCost::ZERO,
@@ -2635,8 +2638,8 @@ impl StacksChainState {
         let root_hash = headers_tx.put_indexed_all(
             &parent_hash,
             &new_tip.index_block_hash(new_consensus_hash),
-            &vec![],
-            &vec![],
+            &[],
+            &[],
         )?;
         let index_block_hash = new_tip.index_block_hash(&new_consensus_hash);
         test_debug!(

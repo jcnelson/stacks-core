@@ -54,7 +54,7 @@ fn test_mempool_sync_2_peers() {
 
     let num_txs = 10;
     let pks: Vec<_> = (0..num_txs).map(|_| StacksPrivateKey::new()).collect();
-    let addrs: Vec<_> = pks.iter().map(|pk| to_addr(pk)).collect();
+    let addrs: Vec<_> = pks.iter().map(to_addr).collect();
     let initial_balances: Vec<_> = addrs
         .iter()
         .map(|a| (a.to_account_principal(), 1000000000))
@@ -86,10 +86,8 @@ fn test_mempool_sync_2_peers() {
         peer_2.process_stacks_epoch_at_tip(&stacks_block, &microblocks);
     }
 
-    let addr = StacksAddress {
-        version: C32_ADDRESS_VERSION_TESTNET_SINGLESIG,
-        bytes: Hash160([0xff; 20]),
-    };
+    let addr =
+        StacksAddress::new(C32_ADDRESS_VERSION_TESTNET_SINGLESIG, Hash160([0xff; 20])).unwrap();
 
     let stacks_tip_ch = peer_1.network.stacks_tip.consensus_hash.clone();
     let stacks_tip_bhh = peer_1.network.stacks_tip.block_hash.clone();
@@ -322,7 +320,7 @@ fn test_mempool_sync_2_peers_paginated() {
 
     let num_txs = 1024;
     let pks: Vec<_> = (0..num_txs).map(|_| StacksPrivateKey::new()).collect();
-    let addrs: Vec<_> = pks.iter().map(|pk| to_addr(pk)).collect();
+    let addrs: Vec<_> = pks.iter().map(to_addr).collect();
     let initial_balances: Vec<_> = addrs
         .iter()
         .map(|a| (a.to_account_principal(), 1000000000))
@@ -354,10 +352,8 @@ fn test_mempool_sync_2_peers_paginated() {
         peer_2.process_stacks_epoch_at_tip(&stacks_block, &microblocks);
     }
 
-    let addr = StacksAddress {
-        version: C32_ADDRESS_VERSION_TESTNET_SINGLESIG,
-        bytes: Hash160([0xff; 20]),
-    };
+    let addr =
+        StacksAddress::new(C32_ADDRESS_VERSION_TESTNET_SINGLESIG, Hash160([0xff; 20])).unwrap();
 
     let stacks_tip_ch = peer_1.network.stacks_tip.consensus_hash.clone();
     let stacks_tip_bhh = peer_1.network.stacks_tip.block_hash.clone();
@@ -513,7 +509,7 @@ fn test_mempool_sync_2_peers_blacklisted() {
 
     let num_txs = 1024;
     let pks: Vec<_> = (0..num_txs).map(|_| StacksPrivateKey::new()).collect();
-    let addrs: Vec<_> = pks.iter().map(|pk| to_addr(pk)).collect();
+    let addrs: Vec<_> = pks.iter().map(to_addr).collect();
     let initial_balances: Vec<_> = addrs
         .iter()
         .map(|a| (a.to_account_principal(), 1000000000))
@@ -545,10 +541,8 @@ fn test_mempool_sync_2_peers_blacklisted() {
         peer_2.process_stacks_epoch_at_tip(&stacks_block, &microblocks);
     }
 
-    let addr = StacksAddress {
-        version: C32_ADDRESS_VERSION_TESTNET_SINGLESIG,
-        bytes: Hash160([0xff; 20]),
-    };
+    let addr =
+        StacksAddress::new(C32_ADDRESS_VERSION_TESTNET_SINGLESIG, Hash160([0xff; 20])).unwrap();
 
     let stacks_tip_ch = peer_1.network.stacks_tip.consensus_hash.clone();
     let stacks_tip_bhh = peer_1.network.stacks_tip.block_hash.clone();
@@ -724,7 +718,7 @@ fn test_mempool_sync_2_peers_problematic() {
 
     let num_txs = 128;
     let pks: Vec<_> = (0..num_txs).map(|_| StacksPrivateKey::new()).collect();
-    let addrs: Vec<_> = pks.iter().map(|pk| to_addr(pk)).collect();
+    let addrs: Vec<_> = pks.iter().map(to_addr).collect();
     let initial_balances: Vec<_> = addrs
         .iter()
         .map(|a| (a.to_account_principal(), 1000000000))
@@ -756,10 +750,8 @@ fn test_mempool_sync_2_peers_problematic() {
         peer_2.process_stacks_epoch_at_tip(&stacks_block, &microblocks);
     }
 
-    let addr = StacksAddress {
-        version: C32_ADDRESS_VERSION_TESTNET_SINGLESIG,
-        bytes: Hash160([0xff; 20]),
-    };
+    let addr =
+        StacksAddress::new(C32_ADDRESS_VERSION_TESTNET_SINGLESIG, Hash160([0xff; 20])).unwrap();
 
     let stacks_tip_ch = peer_1.network.stacks_tip.consensus_hash.clone();
     let stacks_tip_bhh = peer_1.network.stacks_tip.block_hash.clone();
@@ -1098,7 +1090,7 @@ fn test_mempool_sync_2_peers_nakamoto_paginated() {
     ];
     let num_txs = 1024;
     let pks: Vec<_> = (0..num_txs).map(|_| StacksPrivateKey::new()).collect();
-    let addrs: Vec<_> = pks.iter().map(|pk| to_addr(pk)).collect();
+    let addrs: Vec<_> = pks.iter().map(to_addr).collect();
     let initial_balances: Vec<_> = addrs
         .iter()
         .map(|a| (a.to_account_principal(), 1000000000))
@@ -1133,28 +1125,18 @@ fn test_mempool_sync_2_peers_nakamoto_paginated() {
         let _ = peer_1.step_with_ibd(false);
         let _ = peer_2.step_with_ibd(false);
 
-        let event_ids: Vec<usize> = peer_1
-            .network
-            .iter_peer_event_ids()
-            .map(|e_id| *e_id)
-            .collect();
-        let other_event_ids: Vec<usize> = peer_2
-            .network
-            .iter_peer_event_ids()
-            .map(|e_id| *e_id)
-            .collect();
+        let event_ids = peer_1.network.iter_peer_event_ids();
+        let other_event_ids = peer_2.network.iter_peer_event_ids();
 
-        if !event_ids.is_empty() && !other_event_ids.is_empty() {
+        if event_ids.count() > 0 && other_event_ids.count() > 0 {
             break;
         }
     }
 
     debug!("Peers are connected");
 
-    let addr = StacksAddress {
-        version: C32_ADDRESS_VERSION_TESTNET_SINGLESIG,
-        bytes: Hash160([0xff; 20]),
-    };
+    let addr =
+        StacksAddress::new(C32_ADDRESS_VERSION_TESTNET_SINGLESIG, Hash160([0xff; 20])).unwrap();
 
     let stacks_tip_ch = peer_1.network.stacks_tip.consensus_hash.clone();
     let stacks_tip_bhh = peer_1.network.stacks_tip.block_hash.clone();

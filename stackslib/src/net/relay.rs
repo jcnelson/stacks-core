@@ -450,7 +450,7 @@ impl RelayerStats {
         warmup_threshold: usize,
     ) -> HashMap<NeighborKey, usize> {
         let mut dup_counts = self.count_relay_dups(msg);
-        let mut dup_total = dup_counts.values().fold(0, |t, s| t + s);
+        let mut dup_total = dup_counts.values().sum::<usize>();
 
         if dup_total < warmup_threshold {
             // don't make inferences on small samples for total duplicates.
@@ -484,7 +484,7 @@ impl RelayerStats {
         neighbors: &[NeighborKey],
     ) -> Result<HashMap<NeighborKey, usize>, net_error> {
         let asn_counts = RelayerStats::count_ASNs(peerdb.conn(), neighbors)?;
-        let asn_total = asn_counts.values().fold(0, |t, s| t + s);
+        let asn_total = asn_counts.values().sum::<usize>();
 
         let mut ret = HashMap::new();
 
@@ -510,7 +510,7 @@ impl RelayerStats {
         let mut ret = HashSet::new();
         let mut rng = thread_rng();
 
-        let mut norm = rankings.values().fold(0, |t, s| t + s);
+        let mut norm = rankings.values().sum::<usize>();
         let mut rankings_vec: Vec<(NeighborKey, usize)> = rankings.into_iter().collect();
         let mut sampled = 0;
 
@@ -2607,21 +2607,18 @@ impl Relayer {
         new_microblocks: Vec<(Vec<RelayData>, MicroblocksData)>,
     ) {
         // have the p2p thread tell our neighbors about newly-discovered blocks
-        let new_block_chs = new_blocks.iter().map(|(ch, _)| ch.clone()).collect();
+        let new_block_chs = new_blocks.keys().cloned().collect();
         let available = Relayer::load_blocks_available_data(sortdb, new_block_chs)
             .unwrap_or(BlocksAvailableMap::new());
         if !available.is_empty() {
             debug!("{:?}: Blocks available: {}", &_local_peer, available.len());
             if let Err(e) = self.p2p.advertize_blocks(available, new_blocks) {
-                warn!("Failed to advertize new blocks: {:?}", &e);
+                warn!("Failed to advertize new blocks: {e:?}");
             }
         }
 
         // have the p2p thread tell our neighbors about newly-discovered confirmed microblock streams
-        let new_mblock_chs = new_confirmed_microblocks
-            .iter()
-            .map(|(ch, _)| ch.clone())
-            .collect();
+        let new_mblock_chs = new_confirmed_microblocks.keys().cloned().collect();
         let mblocks_available = Relayer::load_blocks_available_data(sortdb, new_mblock_chs)
             .unwrap_or(BlocksAvailableMap::new());
         if !mblocks_available.is_empty() {
@@ -2634,7 +2631,7 @@ impl Relayer {
                 .p2p
                 .advertize_microblocks(mblocks_available, new_confirmed_microblocks)
             {
-                warn!("Failed to advertize new confirmed microblocks: {:?}", &e);
+                warn!("Failed to advertize new confirmed microblocks: {e:?}");
             }
         }
 
@@ -3270,7 +3267,7 @@ impl PeerNetwork {
                                 network.advertize_to_peer(
                                     recipient,
                                     &[((*ch).clone(), (*bhh).clone())],
-                                    |payload| StacksMessageType::BlocksAvailable(payload),
+                                    StacksMessageType::BlocksAvailable,
                                 );
                             }
                         }
@@ -3312,7 +3309,7 @@ impl PeerNetwork {
                                 network.advertize_to_peer(
                                     recipient,
                                     &[((*ch).clone(), (*bhh).clone())],
-                                    |payload| StacksMessageType::MicroblocksAvailable(payload),
+                                    StacksMessageType::MicroblocksAvailable,
                                 );
                             }
                         }

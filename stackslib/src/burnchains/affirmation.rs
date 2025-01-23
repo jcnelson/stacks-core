@@ -679,7 +679,7 @@ pub fn read_parent_block_commits<B: BurnchainHeaderReader>(
             }
         }
     }
-    let mut parent_list: Vec<_> = parents.into_iter().map(|(_, cmt)| cmt).collect();
+    let mut parent_list: Vec<_> = parents.into_values().collect();
     parent_list.sort_by(|a, b| {
         if a.block_height != b.block_height {
             a.block_height.cmp(&b.block_height)
@@ -937,7 +937,7 @@ fn inner_find_heaviest_block_commit_ptr(
 pub fn find_heaviest_block_commit<B: BurnchainHeaderReader>(
     burnchain_tx: &BurnchainDBTransaction,
     indexer: &B,
-    prepare_phase_ops: &Vec<Vec<LeaderBlockCommitOp>>,
+    prepare_phase_ops: &[Vec<LeaderBlockCommitOp>],
     anchor_threshold: u32,
 ) -> Result<Option<(LeaderBlockCommitOp, Vec<Vec<bool>>, u64, u64)>, DBError> {
     let (pox_anchor_ptr, ancestors) =

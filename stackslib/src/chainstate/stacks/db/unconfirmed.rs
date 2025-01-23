@@ -443,7 +443,7 @@ impl UnconfirmedState {
         &self,
         txid: &Txid,
     ) -> Option<(StacksTransaction, BlockHeaderHash, u16)> {
-        self.mined_txs.get(txid).map(|x| x.clone())
+        self.mined_txs.get(txid).cloned()
     }
 
     pub fn num_microblocks(&self) -> u64 {
@@ -767,7 +767,7 @@ mod test {
 
             last_block = Some(stacks_block.clone());
             let (_, _, consensus_hash) = peer.next_burnchain_block(burn_ops.clone());
-            peer.process_stacks_epoch_at_tip(&stacks_block, &vec![]);
+            peer.process_stacks_epoch_at_tip(&stacks_block, &[]);
 
             let canonical_tip = StacksBlockId::new(&consensus_hash, &stacks_block.block_hash());
 
@@ -1004,7 +1004,7 @@ mod test {
 
             last_block = Some(stacks_block.clone());
             let (_, _, consensus_hash) = peer.next_burnchain_block(burn_ops.clone());
-            peer.process_stacks_epoch_at_tip(&stacks_block, &vec![]);
+            peer.process_stacks_epoch_at_tip(&stacks_block, &[]);
 
             let canonical_tip = StacksBlockId::new(&consensus_hash, &stacks_block.block_hash());
 
@@ -1299,7 +1299,7 @@ mod test {
 
             last_block = Some(stacks_block.clone());
             let (_, _, consensus_hash) = peer.next_burnchain_block(burn_ops.clone());
-            peer.process_stacks_epoch_at_tip(&stacks_block, &vec![]);
+            peer.process_stacks_epoch_at_tip(&stacks_block, &[]);
 
             let canonical_tip = StacksBlockHeader::make_index_block_hash(
                 &consensus_hash,

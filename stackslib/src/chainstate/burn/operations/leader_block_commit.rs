@@ -313,13 +313,11 @@ impl LeaderBlockCommitOp {
         })?;
 
         // basic sanity checks
-        if data.parent_block_ptr == 0 {
-            if data.parent_vtxindex != 0 {
-                warn!("Invalid tx: parent block back-pointer must be positive");
-                return Err(op_error::ParseError);
-            }
-            // if parent block ptr and parent vtxindex are both 0, then this block's parent is
-            // the genesis block.
+        // if parent block ptr and parent vtxindex are both 0, then this block's parent is
+        // the genesis block.
+        if data.parent_block_ptr == 0 && data.parent_vtxindex != 0 {
+            warn!("Invalid tx: parent block back-pointer must be positive");
+            return Err(op_error::ParseError);
         }
 
         if u64::from(data.parent_block_ptr) >= block_height {
@@ -467,9 +465,7 @@ impl LeaderBlockCommitOp {
     pub fn all_outputs_burn(&self) -> bool {
         self.commit_outs
             .iter()
-            .fold(true, |previous_is_burn, output_addr| {
-                previous_is_burn && output_addr.is_burn()
-            })
+            .all(|output_addr| output_addr.is_burn())
     }
 
     pub fn spent_txid(&self) -> &Txid {
@@ -1212,17 +1208,17 @@ mod tests {
     }
 
     fn stacks_address_to_bitcoin_tx_out(addr: &StacksAddress, value: u64) -> TxOut {
-        let btc_version = to_b58_version_byte(addr.version)
+        let btc_version = to_b58_version_byte(addr.version())
             .expect("BUG: failed to decode Stacks version byte to Bitcoin version byte");
         let btc_addr_type = legacy_version_byte_to_address_type(btc_version)
             .expect("BUG: failed to decode Bitcoin version byte")
             .0;
         match btc_addr_type {
             LegacyBitcoinAddressType::PublicKeyHash => {
-                LegacyBitcoinAddress::to_p2pkh_tx_out(&addr.bytes, value)
+                LegacyBitcoinAddress::to_p2pkh_tx_out(addr.bytes(), value)
             }
             LegacyBitcoinAddressType::ScriptHash => {
-                LegacyBitcoinAddress::to_p2sh_tx_out(&addr.bytes, value)
+                LegacyBitcoinAddress::to_p2sh_tx_out(addr.bytes(), value)
             }
         }
     }
@@ -1768,8 +1764,8 @@ mod tests {
                     memo: vec![0x1f],
 
                     commit_outs: vec![
-                        PoxAddress::Standard( StacksAddress { version: 26, bytes: Hash160::empty() }, None ),
-                        PoxAddress::Standard( StacksAddress { version: 26, bytes: Hash160::empty() }, None ),
+                        PoxAddress::Standard( StacksAddress::new(26, Hash160::empty()).unwrap(), None ),
+                        PoxAddress::Standard( StacksAddress::new(26, Hash160::empty()).unwrap(), None ),
                     ],
 
                     burn_fee: 24690,
@@ -2043,7 +2039,7 @@ mod tests {
             StacksEpoch::all(0, 0, first_block_height),
         )
         .unwrap();
-        let block_ops = vec![
+        let block_ops = [
             // 122
             vec![],
             // 123
@@ -2129,7 +2125,7 @@ mod tests {
                         &prev_snapshot,
                         &snapshot_row,
                         &block_ops[i],
-                        &vec![],
+                        &[],
                         None,
                         None,
                         None,
@@ -2578,7 +2574,7 @@ mod tests {
         };
 
         let mut db = SortitionDB::connect_test(first_block_height, &first_burn_hash).unwrap();
-        let block_ops = vec![
+        let block_ops = [
             // 122
             vec![],
             // 123
@@ -2664,7 +2660,7 @@ mod tests {
                         &prev_snapshot,
                         &snapshot_row,
                         &block_ops[i],
-                        &vec![],
+                        &[],
                         None,
                         None,
                         None,
@@ -3264,7 +3260,7 @@ mod tests {
         let anchor_block_hash = BlockHeaderHash([0xaa; 32]);
 
         fn reward_addrs(i: usize) -> PoxAddress {
-            let addr = StacksAddress::new(1, Hash160::from_data(&i.to_be_bytes()));
+            let addr = StacksAddress::new(1, Hash160::from_data(&i.to_be_bytes())).unwrap();
             PoxAddress::Standard(addr, None)
         }
         let burn_addr_0 = PoxAddress::Standard(StacksAddress::burn_address(false), None);
@@ -3515,7 +3511,7 @@ mod tests {
             first_block_height,
             &first_burn_hash,
             get_epoch_time_secs(),
-            &vec![
+            &[
                 StacksEpoch {
                     epoch_id: StacksEpochId::Epoch10,
                     start_height: 0,

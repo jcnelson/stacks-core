@@ -633,7 +633,7 @@ fn get_addresses(args: &[String], version: TransactionVersion) -> Result<String,
 
     let mut b58_addr_slice = [0u8; 21];
     b58_addr_slice[0] = b58_version;
-    b58_addr_slice[1..].copy_from_slice(&stx_address.bytes.0);
+    b58_addr_slice[1..].copy_from_slice(&stx_address.bytes().0);
     let b58_address_string = b58::check_encode_slice(&b58_addr_slice);
     Ok(format!(
         "{{
@@ -864,7 +864,7 @@ fn main_handler(mut argv: Vec<String>) -> Result<String, CliError> {
         if let Some(custom_chain_id) = flag.split('=').nth(1) {
             // Attempt to parse the custom chain ID from hex
             chain_id = u32::from_str_radix(custom_chain_id.trim_start_matches("0x"), 16)
-                .map_err(|err| CliError::InvalidChainId(err))?;
+                .map_err(CliError::InvalidChainId)?;
         } else {
             // Use the default testnet chain ID
             chain_id = CHAIN_ID_TESTNET;
