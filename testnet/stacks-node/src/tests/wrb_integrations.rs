@@ -115,6 +115,7 @@ pub fn wrb_playground() {
     }
 
     let terminate = env::var("TERMINATE") == Ok("1".into());
+    let skip_home_wrbpod = env::var("SKIP_HOME_WRBPOD") == Ok("1".into());
 
     let http_port_str = env::var("WRB_PORT")
         .map(|s| s.to_string())
@@ -127,6 +128,7 @@ pub fn wrb_playground() {
 
     let (mut naka_conf, _miner_account) = naka_neon_integration_conf(None);
     naka_conf.node.rpc_bind = format!("127.0.0.1:{}", http_port);
+    naka_conf.node.data_url = format!("http://127.0.0.1:{}", http_port);
 
     let http_origin = format!("http://{}", &naka_conf.node.rpc_bind);
     naka_conf.miner.wait_on_interim_blocks = Duration::from_secs(1);
@@ -305,6 +307,11 @@ pub fn wrb_playground() {
     ]
     .iter()
     {
+        if skip_home_wrbpod && *name == "home-wrbpod" {
+            debug!("Skipping 'home-wrbpod' at test directive");
+            continue;
+        }
+
         let addr = tests::to_addr(key);
         let nonce = *nonces.get(&addr).unwrap_or(&0);
         let contract_tx = make_contract_publish(
