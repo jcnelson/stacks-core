@@ -63,7 +63,7 @@ use crate::util_lib::db::Error as db_error;
 
 fn connect_burnchain_db(burnchain: &Burnchain) -> BurnchainDB {
     let burnchain_db =
-        BurnchainDB::connect(&burnchain.get_burnchaindb_path(), &burnchain, true).unwrap();
+        BurnchainDB::connect(&burnchain.get_burnchaindb_path(), burnchain, true).unwrap();
     burnchain_db
 }
 
@@ -140,7 +140,7 @@ where
             &last_key,
             parent_block_opt.as_ref(),
             1000,
-            |mut builder, ref mut miner, ref sortdb| {
+            |mut builder, ref mut miner, sortdb| {
                 test_debug!("Produce anchored stacks block");
 
                 let mut miner_chainstate = open_chainstate(false, 0x80000000, &full_test_name);
@@ -281,8 +281,6 @@ where
         ],
     );
 
-    let mut sortition_winners = vec![];
-
     let first_snapshot = SortitionDB::get_first_block_snapshot(burn_node.sortdb.conn()).unwrap();
     let mut fork = TestBurnchainFork::new(
         first_snapshot.block_height,
@@ -326,7 +324,7 @@ where
             &last_key,
             parent_block_opt.as_ref(),
             1000,
-            |mut builder, ref mut miner, ref sortdb| {
+            |mut builder, ref mut miner, sortdb| {
                 test_debug!("Produce anchored stacks block");
 
                 let mut miner_chainstate = open_chainstate(false, 0x80000000, &full_test_name);
@@ -415,8 +413,6 @@ where
             chain_tip.anchored_header.as_stacks_epoch2().unwrap(),
         ));
 
-        sortition_winners.push(miner_1.origin_address().unwrap());
-
         let mut next_miner_trace = TestMinerTracePoint::new();
         next_miner_trace.add(
             miner_1.id,
@@ -470,7 +466,7 @@ where
             &last_key_1,
             parent_block_opt.as_ref(),
             1000,
-            |mut builder, ref mut miner, ref sortdb| {
+            |mut builder, ref mut miner, sortdb| {
                 test_debug!(
                     "Produce anchored stacks block in stacks fork 1 via {}",
                     miner.origin_address().unwrap().to_string()
@@ -518,7 +514,7 @@ where
             &last_key_2,
             parent_block_opt.as_ref(),
             1000,
-            |mut builder, ref mut miner, ref sortdb| {
+            |mut builder, ref mut miner, sortdb| {
                 test_debug!(
                     "Produce anchored stacks block in stacks fork 2 via {}",
                     miner.origin_address().unwrap().to_string()
@@ -585,7 +581,10 @@ where
         match (res_1, res_2) {
             (Some(res), None) => {}
             (None, Some(res)) => {}
-            (_, _) => assert!(false),
+            (_, _) => panic!(
+                "Exactly one stacks block should have been queued up. Got {} queued block(s)",
+                res_1.is_some() as u8 + res_2.is_some() as u8
+            ),
         }
 
         // process all blocks
@@ -631,7 +630,6 @@ where
                 &fork_snapshot.consensus_hash,
                 &stacks_block_1.header
             ));
-            sortition_winners.push(miner_1.origin_address().unwrap());
 
             next_miner_trace.add(
                 miner_1.id,
@@ -653,7 +651,6 @@ where
                 &fork_snapshot.consensus_hash,
                 &stacks_block_2.header
             ));
-            sortition_winners.push(miner_2.origin_address().unwrap());
 
             next_miner_trace.add(
                 miner_2.id,
@@ -735,8 +732,6 @@ where
         ],
     );
 
-    let mut sortition_winners = vec![];
-
     let first_snapshot = SortitionDB::get_first_block_snapshot(burn_node.sortdb.conn()).unwrap();
     let mut fork = TestBurnchainFork::new(
         first_snapshot.block_height,
@@ -807,7 +802,7 @@ where
             &last_key_1,
             parent_block_opt.as_ref(),
             1000,
-            |mut builder, ref mut miner, ref sortdb| {
+            |mut builder, ref mut miner, sortdb| {
                 test_debug!(
                     "Produce anchored stacks block in stacks fork 1 via {}",
                     miner.origin_address().unwrap().to_string()
@@ -855,7 +850,7 @@ where
             &last_key_2,
             parent_block_opt.as_ref(),
             1000,
-            |mut builder, ref mut miner, ref sortdb| {
+            |mut builder, ref mut miner, sortdb| {
                 test_debug!(
                     "Produce anchored stacks block in stacks fork 2 via {}",
                     miner.origin_address().unwrap().to_string()
@@ -960,7 +955,6 @@ where
                 &fork_snapshot.consensus_hash,
                 &stacks_block_1.header
             ));
-            sortition_winners.push(miner_1.origin_address().unwrap());
         } else {
             test_debug!(
                 "\n\nMiner 2 ({}) won sortition\n",
@@ -973,7 +967,6 @@ where
                 &fork_snapshot.consensus_hash,
                 &stacks_block_2.header
             ));
-            sortition_winners.push(miner_2.origin_address().unwrap());
         }
 
         // add both blocks to the miner trace, because in this test runner, there will be _two_
@@ -999,8 +992,6 @@ where
 
     test_debug!("\n\nMiner 1 and Miner 2 now separate\n\n");
 
-    let mut sortition_winners_1 = sortition_winners.clone();
-    let mut sortition_winners_2 = sortition_winners.clone();
     let snapshot_at_fork = {
         let ic = burn_node.sortdb.index_conn();
         let tip = fork.get_tip(&ic);
@@ -1071,7 +1062,7 @@ where
             &last_key_1,
             parent_block_opt_1.as_ref(),
             1000,
-            |mut builder, ref mut miner, ref sortdb| {
+            |mut builder, ref mut miner, sortdb| {
                 test_debug!(
                     "Miner {}: Produce anchored stacks block in stacks fork 1 via {}",
                     miner.id,
@@ -1120,7 +1111,7 @@ where
             &last_key_2,
             parent_block_opt_2.as_ref(),
             1000,
-            |mut builder, ref mut miner, ref sortdb| {
+            |mut builder, ref mut miner, sortdb| {
                 test_debug!(
                     "Miner {}: Produce anchored stacks block in stacks fork 2 via {}",
                     miner.id,
@@ -1188,7 +1179,10 @@ where
         match (res_1, res_2) {
             (Some(res), None) => assert!(res),
             (None, Some(res)) => assert!(res),
-            (_, _) => assert!(false),
+            (_, _) => panic!(
+                "Exactly one stacks block should be queued up. Got {} queued block(s)",
+                res_1.is_some() as u8 + res_2.is_some() as u8
+            ),
         }
 
         // process all blocks
@@ -1244,7 +1238,6 @@ where
                 &fork_snapshot.consensus_hash,
                 &stacks_block_1.header
             ));
-            sortition_winners_1.push(miner_1.origin_address().unwrap());
         } else {
             test_debug!(
                 "\n\nMiner 2 ({}) won sortition\n",
@@ -1257,7 +1250,6 @@ where
                 &fork_snapshot.consensus_hash,
                 &stacks_block_2.header
             ));
-            sortition_winners_2.push(miner_2.origin_address().unwrap());
         }
 
         // each miner produced a block; just one of them got accepted
@@ -1423,7 +1415,7 @@ where
             &last_key_1,
             parent_block_opt.as_ref(),
             1000,
-            |mut builder, ref mut miner, ref sortdb| {
+            |mut builder, ref mut miner, sortdb| {
                 test_debug!("Produce anchored stacks block from miner 1");
 
                 let mut miner_chainstate = open_chainstate(false, 0x80000000, &full_test_name);
@@ -1468,7 +1460,7 @@ where
             &last_key_2,
             parent_block_opt.as_ref(),
             1000,
-            |mut builder, ref mut miner, ref sortdb| {
+            |mut builder, ref mut miner, sortdb| {
                 test_debug!("Produce anchored stacks block from miner 2");
 
                 let mut miner_chainstate = open_chainstate(false, 0x80000000, &full_test_name);
@@ -1667,7 +1659,7 @@ where
             &last_key_1,
             parent_block_opt_1.as_ref(),
             1000,
-            |mut builder, ref mut miner, ref sortdb| {
+            |mut builder, ref mut miner, sortdb| {
                 test_debug!(
                     "Produce anchored stacks block in stacks fork 1 via {}",
                     miner.origin_address().unwrap().to_string()
@@ -1715,7 +1707,7 @@ where
             &last_key_2,
             parent_block_opt_2.as_ref(),
             1000,
-            |mut builder, ref mut miner, ref sortdb| {
+            |mut builder, ref mut miner, sortdb| {
                 test_debug!(
                     "Produce anchored stacks block in stacks fork 2 via {}",
                     miner.origin_address().unwrap().to_string()
@@ -1978,7 +1970,7 @@ where
             &last_key_1,
             parent_block_opt_1.as_ref(),
             1000,
-            |mut builder, ref mut miner, ref sortdb| {
+            |mut builder, ref mut miner, sortdb| {
                 test_debug!("Produce anchored stacks block");
 
                 let mut miner_chainstate = open_chainstate(false, 0x80000000, &full_test_name);
@@ -2023,7 +2015,7 @@ where
             &last_key_2,
             parent_block_opt_2.as_ref(),
             1000,
-            |mut builder, ref mut miner, ref sortdb| {
+            |mut builder, ref mut miner, sortdb| {
                 test_debug!("Produce anchored stacks block");
 
                 let mut miner_chainstate = open_chainstate(false, 0x80000000, &full_test_name);
@@ -2222,7 +2214,7 @@ where
             &last_key_1,
             parent_block_opt_1.as_ref(),
             1000,
-            |mut builder, ref mut miner, ref sortdb| {
+            |mut builder, ref mut miner, sortdb| {
                 test_debug!(
                     "Produce anchored stacks block in stacks fork 1 via {}",
                     miner.origin_address().unwrap().to_string()
@@ -2270,7 +2262,7 @@ where
             &last_key_2,
             parent_block_opt_2.as_ref(),
             1000,
-            |mut builder, ref mut miner, ref sortdb| {
+            |mut builder, ref mut miner, sortdb| {
                 test_debug!(
                     "Produce anchored stacks block in stacks fork 2 via {}",
                     miner.origin_address().unwrap().to_string()
@@ -2436,8 +2428,8 @@ fn assert_chainstate_blocks_eq(test_name_1: &str, test_name_2: &str) {
     let ch2 = open_chainstate(false, 0x80000000, test_name_2);
 
     // check presence of anchored blocks
-    let mut all_blocks_1 = StacksChainState::list_blocks(&ch1.db()).unwrap();
-    let mut all_blocks_2 = StacksChainState::list_blocks(&ch2.db()).unwrap();
+    let mut all_blocks_1 = StacksChainState::list_blocks(ch1.db()).unwrap();
+    let mut all_blocks_2 = StacksChainState::list_blocks(ch2.db()).unwrap();
 
     all_blocks_1.sort();
     all_blocks_2.sort();
@@ -2449,9 +2441,9 @@ fn assert_chainstate_blocks_eq(test_name_1: &str, test_name_2: &str) {
 
     // check presence and ordering of microblocks
     let mut all_microblocks_1 =
-        StacksChainState::list_microblocks(&ch1.db(), &ch1.blocks_path).unwrap();
+        StacksChainState::list_microblocks(ch1.db(), &ch1.blocks_path).unwrap();
     let mut all_microblocks_2 =
-        StacksChainState::list_microblocks(&ch2.db(), &ch2.blocks_path).unwrap();
+        StacksChainState::list_microblocks(ch2.db(), &ch2.blocks_path).unwrap();
 
     all_microblocks_1.sort();
     all_microblocks_2.sort();
@@ -2470,14 +2462,14 @@ fn assert_chainstate_blocks_eq(test_name_1: &str, test_name_2: &str) {
     // compare block status (staging vs confirmed) and contents
     for i in 0..all_blocks_1.len() {
         let staging_1_opt = StacksChainState::load_staging_block(
-            &ch1.db(),
+            ch1.db(),
             &ch2.blocks_path,
             &all_blocks_1[i].0,
             &all_blocks_1[i].1,
         )
         .unwrap();
         let staging_2_opt = StacksChainState::load_staging_block(
-            &ch2.db(),
+            ch2.db(),
             &ch2.blocks_path,
             &all_blocks_2[i].0,
             &all_blocks_2[i].1,
@@ -2497,7 +2489,7 @@ fn assert_chainstate_blocks_eq(test_name_1: &str, test_name_2: &str) {
             }
             (None, None) => {}
             (_, _) => {
-                assert!(false);
+                panic!("Expected either both or none of the blocks to be staged");
             }
         }
 
@@ -2507,7 +2499,7 @@ fn assert_chainstate_blocks_eq(test_name_1: &str, test_name_2: &str) {
             }
             (None, None) => {}
             (_, _) => {
-                assert!(false);
+                panic!("Expected either both or none of the blocks to be staged");
             }
         }
     }
@@ -2518,7 +2510,7 @@ fn assert_chainstate_blocks_eq(test_name_1: &str, test_name_2: &str) {
         }
 
         let chunk_1_opt = StacksChainState::load_descendant_staging_microblock_stream(
-            &ch1.db(),
+            ch1.db(),
             &StacksBlockHeader::make_index_block_hash(
                 &all_microblocks_1[i].0,
                 &all_microblocks_1[i].1,
@@ -2528,7 +2520,7 @@ fn assert_chainstate_blocks_eq(test_name_1: &str, test_name_2: &str) {
         )
         .unwrap();
         let chunk_2_opt = StacksChainState::load_descendant_staging_microblock_stream(
-            &ch1.db(),
+            ch1.db(),
             &StacksBlockHeader::make_index_block_hash(
                 &all_microblocks_2[i].0,
                 &all_microblocks_2[i].1,
@@ -2544,20 +2536,20 @@ fn assert_chainstate_blocks_eq(test_name_1: &str, test_name_2: &str) {
             }
             (None, None) => {}
             (_, _) => {
-                assert!(false);
+                panic!("Expected either both or none of the blocks to be staged");
             }
         }
         for j in 0..all_microblocks_1[i].2.len() {
             // staging status is the same
             let staging_1_opt = StacksChainState::load_staging_microblock(
-                &ch1.db(),
+                ch1.db(),
                 &all_microblocks_1[i].0,
                 &all_microblocks_1[i].1,
                 &all_microblocks_1[i].2[j],
             )
             .unwrap();
             let staging_2_opt = StacksChainState::load_staging_microblock(
-                &ch2.db(),
+                ch2.db(),
                 &all_microblocks_2[i].0,
                 &all_microblocks_2[i].1,
                 &all_microblocks_2[i].2[j],
@@ -2570,7 +2562,7 @@ fn assert_chainstate_blocks_eq(test_name_1: &str, test_name_2: &str) {
                 }
                 (None, None) => {}
                 (_, _) => {
-                    assert!(false);
+                    panic!("Expected either both or none of the blocks to be staged");
                 }
             }
         }
@@ -2600,7 +2592,7 @@ fn miner_trace_replay_randomized(miner_trace: &mut TestMinerTrace) {
             miner_trace
                 .miners
                 .iter()
-                .map(|ref miner| miner.origin_address().unwrap())
+                .map(|miner| miner.origin_address().unwrap())
                 .collect(),
         );
         nodes.insert(test_name, next_node);
@@ -2634,15 +2626,15 @@ fn miner_trace_replay_randomized(miner_trace: &mut TestMinerTrace) {
 
             match stacks_block_opt {
                 Some(stacks_block) => {
-                    let mut microblocks = microblocks_opt.unwrap_or(vec![]);
+                    let mut microblocks = microblocks_opt.unwrap_or_default();
 
                     // "discover" the stacks block and its microblocks in all nodes
                     // TODO: randomize microblock discovery order too
-                    for (node_name, mut node) in nodes.iter_mut() {
+                    for (node_name, node) in nodes.iter_mut() {
                         microblocks.as_mut_slice().shuffle(&mut rng);
 
                         preprocess_stacks_block_data(
-                            &mut node,
+                            node,
                             &mut miner_trace.burn_node,
                             &fork_snapshot,
                             &stacks_block,
@@ -2671,7 +2663,7 @@ fn miner_trace_replay_randomized(miner_trace: &mut TestMinerTrace) {
                         } else {
                             for mblock in microblocks.iter() {
                                 preprocess_stacks_block_data(
-                                    &mut node,
+                                    node,
                                     &mut miner_trace.burn_node,
                                     &fork_snapshot,
                                     &stacks_block,
@@ -3602,7 +3594,7 @@ fn mine_anchored_invalid_token_transfer_blocks_single() {
             .unwrap()
             .unwrap();
             assert!(StacksChainState::is_block_orphaned(
-                &chainstate.db(),
+                chainstate.db(),
                 &sn.consensus_hash,
                 &bc.block_header_hash
             )

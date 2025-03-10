@@ -1585,7 +1585,7 @@ fn mempool_db_load_store_replace_tx(#[case] behavior: MempoolCollectionBehavior)
         num_txs,
     )
     .unwrap();
-    assert_eq!(txs.len(), 0);
+    assert!(txs.is_empty());
 
     eprintln!("get empty txs");
     let txs = MemPoolDB::get_txs_after(
@@ -1596,7 +1596,7 @@ fn mempool_db_load_store_replace_tx(#[case] behavior: MempoolCollectionBehavior)
         num_txs,
     )
     .unwrap();
-    assert_eq!(txs.len(), 0);
+    assert!(txs.is_empty());
 
     eprintln!("garbage-collect");
     let mempool_tx = mempool.tx_begin().unwrap();
@@ -1621,7 +1621,7 @@ fn mempool_db_load_store_replace_tx(#[case] behavior: MempoolCollectionBehavior)
         num_txs,
     )
     .unwrap();
-    assert_eq!(txs.len(), 0);
+    assert!(txs.is_empty());
 }
 
 #[test]
@@ -1652,7 +1652,7 @@ fn mempool_db_test_rbf() {
     let mut tx = StacksTransaction {
         version: TransactionVersion::Testnet,
         chain_id: 0x80000000,
-        auth: TransactionAuth::Standard(spending_condition.clone()),
+        auth: TransactionAuth::Standard(spending_condition),
         anchor_mode: TransactionAnchorMode::Any,
         post_condition_mode: TransactionPostConditionMode::Allow,
         post_conditions: Vec::new(),
@@ -1783,7 +1783,7 @@ fn test_add_txs_bloom_filter() {
         let bf = mempool.get_txid_bloom_filter().unwrap();
         let mut mempool_tx = mempool.tx_begin().unwrap();
         for i in 0..128 {
-            let pk = StacksPrivateKey::new();
+            let pk = StacksPrivateKey::random();
             let mut tx = StacksTransaction {
                 version: TransactionVersion::Testnet,
                 chain_id: 0x80000000,
@@ -1889,7 +1889,7 @@ fn test_txtags() {
 
         let mut mempool_tx = mempool.tx_begin().unwrap();
         for i in 0..128 {
-            let pk = StacksPrivateKey::new();
+            let pk = StacksPrivateKey::random();
             let mut tx = StacksTransaction {
                 version: TransactionVersion::Testnet,
                 chain_id: 0x80000000,
@@ -1981,7 +1981,7 @@ fn test_make_mempool_sync_data() {
         for i in 0..((MAX_BLOOM_COUNTER_TXS + 128) as usize) {
             let mut mempool_tx = mempool.tx_begin().unwrap();
             for j in 0..128 {
-                let pk = StacksPrivateKey::new();
+                let pk = StacksPrivateKey::random();
                 let mut tx = StacksTransaction {
                     version: TransactionVersion::Testnet,
                     chain_id: 0x80000000,
@@ -2074,7 +2074,7 @@ fn test_make_mempool_sync_data() {
                     assert!(in_bf >= recent_txids.len());
 
                     for txid in txids.iter() {
-                        if !recent_set.contains(&txid) && bf.contains_raw(&txid.0) {
+                        if !recent_set.contains(txid) && bf.contains_raw(&txid.0) {
                             fp_count += 1;
                         }
                         if bf.contains_raw(&txid.0) {
@@ -2119,7 +2119,7 @@ fn test_make_mempool_sync_data() {
                 );
             }
 
-            let total_count = MemPoolDB::get_num_recent_txs(&mempool.conn()).unwrap();
+            let total_count = MemPoolDB::get_num_recent_txs(mempool.conn()).unwrap();
             eprintln!(
                 "present_count: {}, absent count: {}, total sent: {}, total recent: {}",
                 present_count,
@@ -2154,7 +2154,7 @@ fn test_find_next_missing_transactions() {
 
     let mut mempool_tx = mempool.tx_begin().unwrap();
     for i in 0..(2 * MAX_BLOOM_COUNTER_TXS) {
-        let pk = StacksPrivateKey::new();
+        let pk = StacksPrivateKey::random();
         let mut tx = StacksTransaction {
             version: TransactionVersion::Testnet,
             chain_id: 0x80000000,
@@ -2229,7 +2229,7 @@ fn test_find_next_missing_transactions() {
         ts_after.saturating_sub(ts_before)
     );
 
-    assert_eq!(txs.len(), 0);
+    assert!(txs.is_empty());
     assert!(next_page_opt.is_some());
 
     // all txs returned for an empty txtag set
@@ -2272,7 +2272,7 @@ fn test_find_next_missing_transactions() {
         ts_after.saturating_sub(ts_before)
     );
 
-    assert_eq!(txs.len(), 0);
+    assert!(txs.is_empty());
     assert!(next_page_opt.is_some());
 
     let mut empty_bloom_conn = setup_bloom_counter(function_name!());
@@ -2393,7 +2393,7 @@ fn test_find_next_missing_transactions() {
             (2 * MAX_BLOOM_COUNTER_TXS) as u64,
         )
         .unwrap();
-    assert_eq!(old_txs.len(), 0);
+    assert!(old_txs.is_empty());
     assert!(next_page_opt.is_none());
 
     let (old_txs, next_page_opt, num_visited) = mempool
@@ -2405,7 +2405,7 @@ fn test_find_next_missing_transactions() {
             (2 * MAX_BLOOM_COUNTER_TXS) as u64,
         )
         .unwrap();
-    assert_eq!(old_txs.len(), 0);
+    assert!(old_txs.is_empty());
     assert!(next_page_opt.is_none());
 }
 
@@ -2421,7 +2421,7 @@ fn test_drop_and_blacklist_txs_by_time() {
 
     let mut mempool_tx = mempool.tx_begin().unwrap();
     for i in 0..10 {
-        let pk = StacksPrivateKey::new();
+        let pk = StacksPrivateKey::random();
         let mut tx = StacksTransaction {
             version: TransactionVersion::Testnet,
             chain_id: 0x80000000,
@@ -2538,7 +2538,7 @@ fn test_drop_and_blacklist_txs_by_size() {
 
     let mut mempool_tx = mempool.tx_begin().unwrap();
     for i in 0..10 {
-        let pk = StacksPrivateKey::new();
+        let pk = StacksPrivateKey::random();
         let mut tx = StacksTransaction {
             version: TransactionVersion::Testnet,
             chain_id: 0x80000000,
@@ -2633,7 +2633,6 @@ fn test_filter_txs_by_type() {
     let mut mempool = MemPoolDB::open_test(false, 0x80000000, &chainstate_path).unwrap();
 
     let addr = StacksAddress::new(1, Hash160([0xff; 20])).unwrap();
-    let mut txs = vec![];
     let block_height = 10;
     let mut total_len = 0;
 
@@ -2651,7 +2650,7 @@ fn test_filter_txs_by_type() {
 
     let mut mempool_tx = mempool.tx_begin().unwrap();
     for i in 0..10 {
-        let pk = StacksPrivateKey::new();
+        let pk = StacksPrivateKey::random();
         let mut tx = StacksTransaction {
             version: TransactionVersion::Testnet,
             chain_id: 0x80000000,
@@ -2697,8 +2696,7 @@ fn test_filter_txs_by_type() {
         )
         .unwrap();
 
-        eprintln!("Added {} {}", i, &txid);
-        txs.push(tx);
+        eprintln!("Added {i} {txid}");
     }
     mempool_tx.commit().unwrap();
 

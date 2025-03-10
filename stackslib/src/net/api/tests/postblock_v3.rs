@@ -53,7 +53,7 @@ fn parse_request() {
         )
         .unwrap();
 
-    assert_eq!(handler.block, Some(block.clone()));
+    assert_eq!(handler.block, Some(block));
 
     // parsed request consumes headers that would not be in a constructed reqeuest
     parsed_request.clear_headers();
@@ -194,7 +194,7 @@ fn handle_req_accepted() {
     );
 
     let resp = response.decode_stacks_block_accepted().unwrap();
-    assert_eq!(resp.accepted, true);
+    assert!(resp.accepted);
     assert_eq!(resp.stacks_block_id, next_block_id);
 
     let response = responses.remove(0);
@@ -203,7 +203,7 @@ fn handle_req_accepted() {
         std::str::from_utf8(&response.try_serialize().unwrap()).unwrap()
     );
     let resp = response.decode_stacks_block_accepted().unwrap();
-    assert_eq!(resp.accepted, false);
+    assert!(!resp.accepted);
     assert_eq!(resp.stacks_block_id, next_block_id);
 }
 
@@ -249,7 +249,7 @@ fn handle_req_without_trailing_accepted() {
     );
 
     let resp = response.decode_stacks_block_accepted().unwrap();
-    assert_eq!(resp.accepted, true);
+    assert!(resp.accepted);
     assert_eq!(resp.stacks_block_id, next_block_id);
 
     let response = responses.remove(0);
@@ -258,7 +258,7 @@ fn handle_req_without_trailing_accepted() {
         std::str::from_utf8(&response.try_serialize().unwrap()).unwrap()
     );
     let resp = response.decode_stacks_block_accepted().unwrap();
-    assert_eq!(resp.accepted, false);
+    assert!(!resp.accepted);
     assert_eq!(resp.stacks_block_id, next_block_id);
 }
 

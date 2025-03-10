@@ -2211,12 +2211,7 @@ impl BlockMinerThread {
     /// Only used in mock signing to generate a peer info view
     fn generate_peer_info(&self) -> PeerInfo {
         // Create a peer info view of the current state
-        let server_version = version_string(
-            "stacks-node",
-            option_env!("STACKS_NODE_VERSION")
-                .or(option_env!("CARGO_PKG_VERSION"))
-                .unwrap_or("0.0.0.0"),
-        );
+        let server_version = version_string("stacks-node", option_env!("STACKS_NODE_VERSION"));
         let stacks_tip_height = self.burn_block.canonical_stacks_tip_height;
         let stacks_tip = self.burn_block.canonical_stacks_tip_hash;
         let stacks_tip_consensus_hash = self.burn_block.canonical_stacks_tip_consensus_hash;
@@ -2394,7 +2389,7 @@ impl BlockMinerThread {
             &burn_db,
             &self.burn_block,
             &stackerdbs,
-            SignerMessage::MockBlock(mock_block.clone()),
+            SignerMessage::MockBlock(mock_block),
             MinerSlotID::BlockPushed, // There is no specific slot for mock miner messages. Let's use BlockPushed for MockBlock since MockProposal uses BlockProposal.
             self.config.is_mainnet(),
             &mut miners_stackerdb,
@@ -3755,7 +3750,7 @@ impl RelayerThread {
         }
 
         let Some(mut miner_thread_state) =
-            self.create_block_miner(registered_key, last_burn_block.clone(), issue_timestamp_ms)
+            self.create_block_miner(registered_key, last_burn_block, issue_timestamp_ms)
         else {
             return false;
         };

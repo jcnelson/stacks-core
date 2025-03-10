@@ -40,13 +40,14 @@ use crate::chainstate::burn::db::sortdb::{
 };
 use crate::chainstate::burn::{BlockSnapshot, ConsensusHash};
 use crate::chainstate::coordinator::OnChainRewardSetProvider;
-use crate::chainstate::nakamoto::miner::{NakamotoBlockBuilder, NakamotoTenureInfo};
+use crate::chainstate::nakamoto::miner::{BlockMetadata, NakamotoBlockBuilder, NakamotoTenureInfo};
 use crate::chainstate::nakamoto::{NakamotoBlock, NakamotoChainState};
 use crate::chainstate::stacks::db::blocks::StagingBlock;
 use crate::chainstate::stacks::db::{StacksBlockHeaderTypes, StacksChainState, StacksHeaderInfo};
 use crate::chainstate::stacks::miner::*;
 use crate::chainstate::stacks::{Error as ChainstateError, *};
 use crate::clarity_vm::clarity::ClarityInstance;
+use crate::clarity_vm::database::GetTenureStartId;
 use crate::config::{Config, ConfigFile, DEFAULT_MAINNET_CONFIG};
 use crate::core::*;
 use crate::cost_estimates::metrics::UnitMetric;
@@ -84,7 +85,7 @@ pub fn drain_common_opts(argv: &mut Vec<String>, start_at: usize) -> CommonOpts 
             "config" => {
                 let path = &argv[i];
                 i += 1;
-                let config_file = ConfigFile::from_path(&path).unwrap_or_else(|e| {
+                let config_file = ConfigFile::from_path(path).unwrap_or_else(|e| {
                     panic!("Failed to read '{path}' as stacks-node config: {e}")
                 });
                 let config = Config::from_config_file(config_file, false).unwrap_or_else(|e| {
@@ -279,7 +280,7 @@ pub fn command_replay_block_nakamoto(argv: &[String], conf: Option<&Config>) {
         if i % 100 == 0 {
             println!("Checked {i}...");
         }
-        replay_naka_staging_block(db_path, index_block_hash, &conf);
+        replay_naka_staging_block(db_path, index_block_hash, conf);
     }
     println!("Finished. run_time_seconds = {}", start.elapsed().as_secs());
 }
@@ -374,7 +375,7 @@ pub fn command_replay_mock_mining(argv: &[String], conf: Option<&Config>) {
             "block_height" => bh,
             "block" => ?block
         );
-        replay_mock_mined_block(&db_path, block, conf);
+        replay_mock_mined_block(db_path, block, conf);
     }
 }
 
@@ -453,7 +454,7 @@ pub fn command_try_mine(argv: &[String], conf: Option<&Config>) {
 
     let result = match &parent_stacks_header.anchored_header {
         StacksBlockHeaderTypes::Epoch2(..) => {
-            let sk = StacksPrivateKey::new();
+            let sk = StacksPrivateKey::random();
             let mut tx_auth = TransactionAuth::from_p2pkh(&sk).unwrap();
             tx_auth.set_origin_nonce(0);
 
@@ -504,7 +505,21 @@ pub fn command_try_mine(argv: &[String], conf: Option<&Config>) {
                 None,
                 0,
             )
-            .map(|(block, cost, size, _)| (block.header.block_hash(), block.txs, cost, size))
+            .map(
+                |BlockMetadata {
+                     block,
+                     tenure_consumed,
+                     tenure_size,
+                     ..
+                 }| {
+                    (
+                        block.header.block_hash(),
+                        block.txs,
+                        tenure_consumed,
+                        tenure_size,
+                    )
+                },
+            )
         }
     };
 
@@ -713,9 +728,16 @@ fn replay_block(
     };
     let parent_block_hash = parent_block_header.block_hash();
 
+    let Some(cost) =
+        StacksChainState::get_stacks_block_anchored_cost(chainstate_tx.conn(), block_id).unwrap()
+    else {
+        println!("No header info found for {block_id}");
+        return;
+    };
+
     let Some(next_microblocks) = StacksChainState::inner_find_parent_microblock_stream(
         &chainstate_tx.tx,
-        &block_hash,
+        block_hash,
         &parent_block_hash,
         &parent_header_info.consensus_hash,
         parent_microblock_hash,
@@ -727,7 +749,7 @@ fn replay_block(
     };
 
     let (burn_header_hash, burn_header_height, burn_header_timestamp, _winning_block_txid) =
-        match SortitionDB::get_block_snapshot_consensus(&sort_tx, &block_consensus_hash).unwrap() {
+        match SortitionDB::get_block_snapshot_consensus(&sort_tx, block_consensus_hash).unwrap() {
             Some(sn) => (
                 sn.burn_header_hash,
                 sn.block_height as u32,
@@ -745,10 +767,10 @@ fn replay_block(
         block_consensus_hash, block_hash, &block_id, &burn_header_hash, parent_microblock_hash,
     );
 
-    if !StacksChainState::check_block_attachment(&parent_block_header, &block.header) {
+    if !StacksChainState::check_block_attachment(parent_block_header, &block.header) {
         let msg = format!(
             "Invalid stacks block {}/{} -- does not attach to parent {}/{}",
-            &block_consensus_hash,
+            block_consensus_hash,
             block.block_hash(),
             parent_block_header.block_hash(),
             &parent_header_info.consensus_hash
@@ -760,9 +782,9 @@ fn replay_block(
     // validation check -- validate parent microblocks and find the ones that connect the
     // block's parent to this block.
     let next_microblocks = StacksChainState::extract_connecting_microblocks(
-        &parent_header_info,
-        &block_consensus_hash,
-        &block_hash,
+        parent_header_info,
+        block_consensus_hash,
+        block_hash,
         block,
         next_microblocks,
     )
@@ -795,12 +817,12 @@ fn replay_block(
         clarity_instance,
         &mut sort_tx,
         &pox_constants,
-        &parent_header_info,
+        parent_header_info,
         block_consensus_hash,
         &burn_header_hash,
         burn_header_height,
         burn_header_timestamp,
-        &block,
+        block,
         block_size,
         &next_microblocks,
         block_commit_burn,
@@ -808,7 +830,13 @@ fn replay_block(
         block_am.weight(),
         true,
     ) {
-        Ok((_receipt, _, _)) => {
+        Ok((receipt, _, _)) => {
+            if receipt.anchored_block_cost != cost {
+                println!("Failed processing block! block = {block_id}. Unexpected cost. expected = {cost}, evaluated = {}",
+                         receipt.anchored_block_cost);
+                process::exit(1);
+            }
+
             info!("Block processed successfully! block = {block_id}");
         }
         Err(e) => {
@@ -877,6 +905,33 @@ fn replay_block_nakamoto(
            "stacks_block_id" => %block.header.block_id(),
            "burn_block_hash" => %next_ready_block_snapshot.burn_header_hash
     );
+
+    let Some(mut expected_total_tenure_cost) = NakamotoChainState::get_total_tenure_cost_at(
+        stacks_chain_state.db(),
+        &block.header.block_id(),
+    )
+    .unwrap() else {
+        println!("Failed to find cost for block {}", block.header.block_id());
+        return Ok(());
+    };
+
+    let expected_cost = if block.get_tenure_tx_payload().is_some() {
+        expected_total_tenure_cost
+    } else {
+        let Some(expected_parent_total_tenure_cost) = NakamotoChainState::get_total_tenure_cost_at(
+            stacks_chain_state.db(),
+            &block.header.parent_block_id,
+        )
+        .unwrap() else {
+            println!(
+                "Failed to find cost for parent of block {}",
+                block.header.block_id()
+            );
+            return Ok(());
+        };
+        expected_total_tenure_cost.sub(&expected_parent_total_tenure_cost).expect("FATAL: failed to subtract parent total cost from self total cost in non-tenure-changing block");
+        expected_total_tenure_cost
+    };
 
     let elected_height = sort_db
         .get_consensus_hash_height(&block.header.consensus_hash)?
@@ -1065,7 +1120,7 @@ fn replay_block_nakamoto(
     // though it will always be None), which gets the borrow-checker to believe that it's safe
     // to access `stacks_chain_state` again.  In the `Ok(..)` case, it's instead sufficient so
     // simply commit the block before beginning the second transaction to mark it processed.
-
+    let block_id = block.block_id();
     let mut burn_view_handle = sort_db.index_handle(&burnchain_view_sn.sortition_id);
     let (ok_opt, err_opt) = match NakamotoChainState::append_block(
         &mut chainstate_tx,
@@ -1080,20 +1135,28 @@ fn replay_block_nakamoto(
             .try_into()
             .expect("Failed to downcast u64 to u32"),
         next_ready_block_snapshot.burn_header_timestamp,
-        &block,
+        block,
         block_size,
         commit_burn,
         sortition_burn,
         &active_reward_set,
         true,
     ) {
-        Ok(next_chain_tip_info) => (Some(next_chain_tip_info), None),
+        Ok((receipt, _, _, _)) => (Some(receipt), None),
         Err(e) => (None, Some(e)),
     };
 
+    if let Some(receipt) = ok_opt {
+        // check the cost
+        let evaluated_cost = receipt.anchored_block_cost.clone();
+        if evaluated_cost != expected_cost {
+            println!("Failed processing block! block = {block_id}. Unexpected cost. expected = {expected_cost}, evaluated = {evaluated_cost}");
+            process::exit(1);
+        }
+    }
+
     if let Some(e) = err_opt {
         // force rollback
-        drop(ok_opt);
         drop(chainstate_tx);
 
         warn!(

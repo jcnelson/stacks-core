@@ -446,7 +446,7 @@ impl OrderIndependentMultisigSpendingCondition {
                     }
 
                     let (pubkey, _next_sighash) = TransactionSpendingCondition::next_verification(
-                        &initial_sighash,
+                        initial_sighash,
                         cond_code,
                         self.tx_fee,
                         self.nonce,
@@ -1256,17 +1256,11 @@ impl TransactionAuth {
     }
 
     pub fn is_standard(&self) -> bool {
-        match *self {
-            TransactionAuth::Standard(_) => true,
-            _ => false,
-        }
+        matches!(self, TransactionAuth::Standard(_))
     }
 
     pub fn is_sponsored(&self) -> bool {
-        match *self {
-            TransactionAuth::Sponsored(_, _) => true,
-            _ => false,
-        }
+        matches!(self, TransactionAuth::Sponsored(..))
     }
 
     /// When beginning to sign a sponsored transaction, the origin account will not commit to any
@@ -2372,11 +2366,11 @@ mod test {
 
         for epoch_id in epoch_list.iter() {
             if activation_epoch_id.is_none() {
-                assert_eq!(auth.is_supported_in_epoch(*epoch_id), true);
+                assert!(auth.is_supported_in_epoch(*epoch_id));
             } else if activation_epoch_id.unwrap() > *epoch_id {
-                assert_eq!(auth.is_supported_in_epoch(*epoch_id), false);
+                assert!(!auth.is_supported_in_epoch(*epoch_id));
             } else {
-                assert_eq!(auth.is_supported_in_epoch(*epoch_id), true);
+                assert!(auth.is_supported_in_epoch(*epoch_id));
             }
         }
     }
