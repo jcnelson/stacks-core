@@ -215,7 +215,8 @@ pub fn ptrs_from_bytes<R: Read + Seek>(
     r: &mut R,
     ptrs_buf: &mut [TriePtr],
 ) -> Result<u8, Error> {
-    if TrieNodeID::from_u8(clear_ctrl_bits(node_id)).is_none() {
+    let cleared_node_id = clear_ctrl_bits(node_id);
+    if TrieNodeID::from_u8(cleared_node_id).is_none() {
         error!("Bad node ID {:x}", node_id);
         return Err(Error::CorruptionError(format!(
             "Bad node ID: {:x}",
@@ -275,8 +276,10 @@ pub fn ptrs_from_bytes<R: Read + Seek>(
         .first()
         .ok_or_else(|| Error::CorruptionError("Failed to read 1st byte from bytes array".into()))?;
 
-    if clear_ctrl_bits(*nid) != clear_ctrl_bits(node_id) {
-        let Some(nid_node_id) = TrieNodeID::from_u8(clear_ctrl_bits(*nid)) else {
+    let cleared_nid = clear_ctrl_bits(*nid);
+
+    if cleared_nid != cleared_node_id {
+        let Some(nid_node_id) = TrieNodeID::from_u8(cleared_nid) else {
             return Err(Error::CorruptionError(
                 "Failed to read expected node ID -- not a valid ID".to_string(),
             ));
@@ -303,26 +306,25 @@ pub fn ptrs_from_bytes<R: Read + Seek>(
         .ok_or_else(|| Error::CorruptionError("Failed to read >1 bytes from bytes array".into()))?;
 
     if is_compressed(*nid) {
-        trace!("Node {} has compressed ptrs", clear_ctrl_bits(*nid));
+        trace!("Node {} has compressed ptrs", cleared_nid);
         let sparse_flag = ptr_bytes.get(0).ok_or_else(|| {
             Error::CorruptionError("Failed to read 2nd byte from bytes array".into())
         })?;
 
         if *sparse_flag == SPARSE_PTR_BITMAP_MARKER {
-            trace!("Node {} has sparse compressed ptrs", clear_ctrl_bits(*nid));
+            trace!("Node {} has sparse compressed ptrs", cleared_nid);
 
             // this is a sparse ptrs list
             let ptr_bytes = ptr_bytes.get(1..).ok_or_else(|| {
                 Error::CorruptionError("Failed to read >2 bytes from bytes array".into())
             })?;
 
-            let bitmap_size =
-                get_sparse_ptrs_bitmap_size(clear_ctrl_bits(*nid)).ok_or_else(|| {
-                    Error::CorruptionError(format!(
-                        "Unable to determine bitmap size for node type {}",
-                        clear_ctrl_bits(*nid)
-                    ))
-                })?;
+            let bitmap_size = get_sparse_ptrs_bitmap_size(cleared_nid).ok_or_else(|| {
+                Error::CorruptionError(format!(
+                    "Unable to determine bitmap size for node type {}",
+                    cleared_nid
+                ))
+            })?;
 
             if ptr_bytes.len() < bitmap_size {
                 return Err(Error::CorruptionError(
@@ -335,7 +337,7 @@ pub fn ptrs_from_bytes<R: Read + Seek>(
 
             trace!(
                 "Node {} has sparse compressed ptrs bitmap {}",
-                clear_ctrl_bits(*nid),
+                cleared_nid,
                 to_hex(&bitmap)
             );
 
@@ -391,7 +393,7 @@ pub fn ptrs_from_bytes<R: Read + Seek>(
             }
             trace!(
                 "Node {} sparse compressed ptrs ({} bytes): {}",
-                clear_ctrl_bits(*nid),
+                cleared_nid,
                 cursor,
                 &ptrs_fmt(&ptrs_buf)
             );
@@ -407,7 +409,7 @@ pub fn ptrs_from_bytes<R: Read + Seek>(
                 error!("Failed to seek to the end of the sparse compressed ptrs: {e:?}")
             })?;
         } else {
-            trace!("Node {} has dense compressed ptrs", clear_ctrl_bits(*nid));
+            trace!("Node {} has dense compressed ptrs", cleared_nid);
             // this is a nearly-full ptrs list
             // ptrs list is compressed, meaning each ptr might be a different size
             let mut cursor = 0;
@@ -426,7 +428,7 @@ pub fn ptrs_from_bytes<R: Read + Seek>(
             }
             trace!(
                 "Node {} dense compressed ptrs: {}",
-                clear_ctrl_bits(*nid),
+                cleared_nid,
                 &ptrs_fmt(&ptrs_buf)
             );
 
@@ -445,7 +447,7 @@ pub fn ptrs_from_bytes<R: Read + Seek>(
         // ptrs list is not compressed
         // iterate over the read-in bytes in chunks of TRIEPTR_SIZE and store them
         //   to `ptrs_buf`
-        trace!("Node {} has uncompressed ptrs", clear_ctrl_bits(*nid));
+        trace!("Node {} has uncompressed ptrs", cleared_nid);
         let reading_ptrs = ptr_bytes
             .chunks_exact(TRIEPTR_SIZE)
             .zip(ptrs_buf.iter_mut());
