@@ -1151,14 +1151,14 @@ impl<T: MarfTrieId> TrieRAM<T> {
                 // IMPROVEMENT: don't store a copy of a node that was copied forward via
                 // MARF::walk_cow(). Instead, store only the new ptrs in the copied node, and store
                 // a pointer to the original node in the ancestral trie.
-                // +32 is for the hash
+                // TRIEHASH_ENCODED_SIZE accounts for the trie hash bytes written before the patch
                 trace!(
                     "Patch node {:?} for {:?} to be written at {}",
                     &patch_node,
                     &node,
                     ptr
                 );
-                let num_written = 32 + patch_node.size();
+                let num_written = TRIEHASH_ENCODED_SIZE + patch_node.size();
                 ptr += num_written as u64;
 
                 let mut num_new_nodes = 0;
