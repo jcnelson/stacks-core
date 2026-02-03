@@ -30,6 +30,10 @@ use crate::codec::StacksMessageCodec;
 use crate::types::chainstate::{TrieHash, TRIEHASH_ENCODED_SIZE};
 use crate::util::hash::to_hex;
 
+/// Magic byte value indicating a sparse compressed pointer list.
+/// This value cannot be a valid [`TrieNodeID`], making it safe to use as a marker.
+pub const SPARSE_PTR_BITMAP_MARKER: u8 = 0xff;
+
 /// Get the size of a Trie path (note that a Trie path is 32 bytes long, and can definitely _not_
 /// be over 255 bytes).
 pub fn get_path_byte_len(p: &[u8]) -> usize {
@@ -136,7 +140,7 @@ pub fn get_compressed_ptrs_size(id: u8, ptrs: &[TriePtr]) -> Option<(usize, bool
         ptrs_size += ptr.compressed_size();
     }
 
-    // +1 is for the 0xff bitmap marker
+    // +1 is for the SPARSE_PTR_BITMAP_MARKER bitmap marker
     let sparse_size = usize::try_from(1 + bitmap_size + sparse_ptrs_size).expect("infallible");
     if sparse_size < ptrs_size {
         return Some((sparse_size, true));
@@ -169,7 +173,7 @@ pub fn get_ptrs_byte_len_compressed(id: u8, ptrs: &[TriePtr]) -> usize {
 ///  0xff   bitmap    list of compressed `TriePtr`s
 ///
 /// Where
-/// * 0xff is a marker bit that cannot be the first byte of a `TriePtr`, and indicates that a
+/// * 0xff ([`SPARSE_PTR_BITMAP_MARKER`]) is a marker bit that cannot be the first byte of a `TriePtr`, and indicates that a
 /// bitmap follows
 /// * `bitmap` is a bit field in which the ith bit is set if the ith `TriePtr` is not empty.  All
 /// other `TriePtr`s in `ptrs_buf` will be considered empty, and initialized as such.
@@ -304,7 +308,7 @@ pub fn ptrs_from_bytes<R: Read + Seek>(
             Error::CorruptionError("Failed to read 2nd byte from bytes array".into())
         })?;
 
-        if *sparse_flag == 0xff {
+        if *sparse_flag == SPARSE_PTR_BITMAP_MARKER {
             trace!("Node {} has sparse compressed ptrs", clear_ctrl_bits(*nid));
 
             // this is a sparse ptrs list
