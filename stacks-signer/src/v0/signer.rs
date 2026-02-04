@@ -993,6 +993,32 @@ impl Signer {
         }
     }
 
+    /// Check if we have enough pre-commits to reach consensus for a block
+    fn met_pre_commit_threshold(&mut self, block_hash: &Sha512Trunc256Sum) -> bool {
+        // do we have enough pre-commits to reach consensus?
+        // i.e. is the threshold reached?
+        let committers = self
+            .signer_db
+            .get_block_pre_committers(block_hash)
+            .unwrap_or_else(|_| panic!("{self}: Failed to load block commits"));
+
+        let commit_weight = self.compute_signature_signing_weight(committers.iter());
+        let total_weight = self.compute_signature_total_weight();
+
+        let min_weight = NakamotoBlockHeader::compute_voting_weight_threshold(total_weight)
+            .unwrap_or_else(|_| {
+                panic!("{self}: Failed to compute threshold weight for {total_weight}")
+            });
+
+        if min_weight > commit_weight {
+            debug!(
+                "{self}: Not enough pre-committed to block {block_hash} (have {commit_weight}, need at least {min_weight}/{total_weight})"
+            );
+            return false;
+        }
+        true
+    }
+
     /// Handle signer state update message
     fn handle_state_machine_update(
         &mut self,
@@ -1061,29 +1087,18 @@ impl Signer {
             .unwrap_or_else(|_| panic!("{self}: Failed to save block pre-commit"));
 
         // do we have enough pre-commits to reach consensus?
-        // i.e. is the threshold reached?
-        let committers = self
-            .signer_db
-            .get_block_pre_committers(block_hash)
-            .unwrap_or_else(|_| panic!("{self}: Failed to load block commits"));
-
-        let commit_weight = self.compute_signature_signing_weight(committers.iter());
-        let total_weight = self.compute_signature_total_weight();
-
-        let min_weight = NakamotoBlockHeader::compute_voting_weight_threshold(total_weight)
-            .unwrap_or_else(|_| {
-                panic!("{self}: Failed to compute threshold weight for {total_weight}")
-            });
-
-        if min_weight > commit_weight {
-            debug!(
-                "{self}: Not enough pre-committed to block {block_hash} (have {commit_weight}, need at least {min_weight}/{total_weight})"
-            );
+        if !self.met_pre_commit_threshold(block_hash) {
             return;
         }
 
+        let Some(valid) = block_info.valid else {
+            debug!(
+                "{self}: Enough pre-committed to block {block_hash}, but we do not yet know if the block is valid. Doing nothing."
+            );
+            return;
+        };
         // have enough commits, so maybe we should actually broadcast our signature...
-        if block_info.valid == Some(false) {
+        if !valid {
             // We already marked this block as invalid. We should not do anything further as we do not change our votes on rejected blocks.
             debug!(
                 "{self}: Enough pre-committed to block {block_hash}, but we do not view the block as valid. Doing nothing."
