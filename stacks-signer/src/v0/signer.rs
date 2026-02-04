@@ -1064,7 +1064,7 @@ impl Signer {
         }
 
         self.signer_db
-            .insert_block(&block_info)
+            .insert_block(block_info)
             .unwrap_or_else(|e| self.handle_insert_block_error(e));
         let accepted = self.create_block_acceptance(&block_info.block);
         // have to save the signature _after_ the block info

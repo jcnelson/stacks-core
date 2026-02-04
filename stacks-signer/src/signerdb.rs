@@ -187,11 +187,11 @@ pub struct BlockInfo {
     pub vote: Option<NakamotoBlockVote>,
     /// Whether the block contents are valid
     pub valid: Option<bool>,
-    /// Whether this block is already being signed over (pre-committed or signed by self or group)
-    pub signed_over: bool,
     /// Time at which the proposal was received by this signer (epoch time in seconds)
     pub proposed_time: u64,
-    /// Time at which the proposal was pre-committed or signed by this signer (epoch time in seconds)
+    /// Time at which the proposal was pre-commited to by this signer (epoch time in seconds)
+    pub approved_time: Option<u64>,
+    /// Time at which the proposal was signed by this signer (epoch time in seconds)
     pub signed_self: Option<u64>,
     /// Time at which the proposal was signed by a threshold in the signer set (epoch time in seconds)
     pub signed_group: Option<u64>,
@@ -213,8 +213,8 @@ impl From<BlockProposal> for BlockInfo {
             reward_cycle: value.reward_cycle,
             vote: None,
             valid: None,
-            signed_over: false,
             proposed_time: get_epoch_time_secs(),
+            approved_time: None,
             signed_self: None,
             signed_group: None,
             ext: ExtraBlockInfo::default(),
@@ -244,28 +244,25 @@ impl BlockInfo {
         Some(tenure_change.cause)
     }
 
-    /// Mark this block as locally accepted, valid, signed over, and records either the self or group signed timestamp in the block info if it wasn't
-    ///  already set.
-    pub fn mark_locally_accepted(&mut self, group_signed: bool) -> Result<(), String> {
-        self.move_to(BlockState::LocallyAccepted)?;
-        self.valid = Some(true);
-        self.signed_over = true;
-        if group_signed {
-            self.signed_group.get_or_insert(get_epoch_time_secs());
-        } else {
-            self.signed_self.get_or_insert(get_epoch_time_secs());
-        }
-        Ok(())
-    }
-
-    /// Mark this block as valid and pre-committed. We set the `signed_self`
-    /// timestamp here because pre-committing to a block implies the same
-    /// behavior as a local acceptance from the signer's perspective.
+    /// Mark this block as valid and pre-committed.
     pub fn mark_pre_committed(&mut self) -> Result<(), String> {
         self.move_to(BlockState::PreCommitted)?;
         self.valid = Some(true);
-        self.signed_over = true;
-        self.signed_self.get_or_insert(get_epoch_time_secs());
+        self.approved_time.get_or_insert(get_epoch_time_secs());
+        Ok(())
+    }
+
+    /// Mark this block as locally accepted, valid, signed over, and records either the approved and self signed timestamps
+    ///  or group signed timestamp in the block info if it wasn't already set.
+    pub fn mark_locally_accepted(&mut self, group_signed: bool) -> Result<(), String> {
+        self.move_to(BlockState::LocallyAccepted)?;
+        self.valid = Some(true);
+        if group_signed {
+            self.signed_group.get_or_insert(get_epoch_time_secs());
+        } else {
+            self.approved_time.get_or_insert(get_epoch_time_secs());
+            self.signed_self.get_or_insert(get_epoch_time_secs());
+        }
         Ok(())
     }
 
@@ -274,7 +271,6 @@ impl BlockInfo {
     fn mark_globally_accepted(&mut self) -> Result<(), String> {
         self.move_to(BlockState::GloballyAccepted)?;
         self.valid = Some(true);
-        self.signed_over = true;
         self.signed_group.get_or_insert(get_epoch_time_secs());
         Ok(())
     }
@@ -661,7 +657,7 @@ static ADD_BURN_BLOCK_RECEIVED_TIMES_CONSENSUS_HASH_INDEX: &str = r#"
 CREATE INDEX IF NOT EXISTS burn_block_updates_received_times_consensus_hash ON burn_block_updates_received_times(burn_block_consensus_hash, received_time ASC);
 "#;
 
-// Used by get_last_globally_accepted_block_signed_self
+// Used by get_last_globally_accepted_block_approved_time
 static ADD_BLOCK_SIGNED_SELF_INDEX: &str = r#"
 CREATE INDEX idx_blocks_query_opt ON blocks (consensus_hash, state, signed_self, burn_block_height DESC);
 "#;
@@ -717,6 +713,49 @@ CREATE TABLE IF NOT EXISTS block_pre_commits (
 static ADD_TENURE_CAUSE: &str = r#"
 ALTER TABLE blocks
     ADD COLUMN tenure_change_cause INTEGER;
+"#;
+
+/// Migration logic necessary to move blocks from the old blocks table to the new blocks table
+/// with the approved_time field added (treated as the signed_self time for existing rows)
+/// Drops the signed_over column and associated index, and adds new indexes for querying by approved_time/signed_self/signed_group
+static ADD_AND_FILL_APPROVED_TIME: &str = r#"
+-- Add approved_time column (used to track pre-commit / approval time)
+ALTER TABLE blocks
+    ADD COLUMN approved_time INTEGER;
+
+-- Backfill approved_time from legacy signed_self timestamps
+UPDATE blocks
+SET approved_time = signed_self
+WHERE approved_time IS NULL
+  AND signed_self IS NOT NULL;
+
+-- Replace the old query optimization index to use approved_time
+DROP INDEX IF EXISTS idx_blocks_query_opt;
+CREATE INDEX IF NOT EXISTS idx_blocks_query_opt
+ON blocks (
+    consensus_hash,
+    state,
+    approved_time,
+    burn_block_height DESC
+);
+
+-- Remove legacy signed_over plumbing
+DROP INDEX IF EXISTS blocks_signed_over;
+DROP INDEX IF EXISTS blocks_consensus_hash_status_height;
+ALTER TABLE blocks DROP COLUMN signed_over;
+
+-- Add partial indexes for fast tenure-level "has signed block" queries
+CREATE INDEX IF NOT EXISTS idx_blocks_tenure_self_signed
+ON blocks (consensus_hash, stacks_height)
+WHERE signed_self IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_blocks_tenure_group_signed
+ON blocks (consensus_hash, stacks_height)
+WHERE signed_group IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_blocks_tenure_approved
+ON blocks (consensus_hash, stacks_height)
+WHERE approved_time IS NOT NULL;
 "#;
 
 static SCHEMA_1: &[&str] = &[
@@ -842,6 +881,11 @@ static SCHEMA_18: &[&str] = &[
     "INSERT INTO db_config (version) VALUES (18);",
 ];
 
+static SCHEMA_19: &[&str] = &[
+    ADD_AND_FILL_APPROVED_TIME,
+    "INSERT INTO db_config (version) VALUES (19);",
+];
+
 struct Migration {
     version: u32,
     statements: &'static [&'static str],
@@ -920,11 +964,15 @@ static MIGRATIONS: &[Migration] = &[
         version: 18,
         statements: SCHEMA_18,
     },
+    Migration {
+        version: 19,
+        statements: SCHEMA_19,
+    },
 ];
 
 impl SignerDb {
     /// The current schema version used in this build of the signer binary.
-    pub const SCHEMA_VERSION: u32 = 18;
+    pub const SCHEMA_VERSION: u32 = 19;
 
     /// Create a new `SignerState` instance.
     /// This will create a new SQLite database at the given path
@@ -1026,23 +1074,19 @@ impl SignerDb {
             if new_version_check != migration.version {
                 sql_tx.rollback()?;
                 return Err(DBError::Other(format!(
-                    "Migration to version {} failed to update DB version. Expected {}, got {}.",
-                    migration.version, migration.version, new_version_check
+                    "Migration to version {} failed to update DB version. Expected {}, got {new_version_check}.",
+                    migration.version, migration.version
                 )));
             }
             current_db_version = new_version_check;
-            debug!(
-                "Successfully migrated to schema version {}",
-                current_db_version
-            );
+            debug!("Successfully migrated to schema version {current_db_version}");
         }
 
         match current_db_version.cmp(&Self::SCHEMA_VERSION) {
             std::cmp::Ordering::Less => {
                 sql_tx.rollback()?;
                 return Err(DBError::Other(format!(
-                    "Database migration incomplete. Current version: {}, SCHEMA_VERSION: {}",
-                    current_db_version,
+                    "Database migration incomplete. Current version: {current_db_version}, SCHEMA_VERSION: {}",
                     Self::SCHEMA_VERSION
                 )));
             }
@@ -1160,21 +1204,20 @@ impl SignerDb {
         try_deserialize(result)
     }
 
-    /// Return whether there was signed block in a tenure (identified by its consensus hash)
-    pub fn has_signed_block_in_tenure(&self, tenure: &ConsensusHash) -> Result<bool, DBError> {
-        let query =
-            "SELECT block_info FROM blocks WHERE consensus_hash = ? AND signed_over = 1 LIMIT 1";
-        let result: Option<String> = query_row(&self.db, query, [tenure])?;
+    /// Return whether there was an approved/signed block in a tenure (identified by its consensus hash)
+    pub fn has_approved_block_in_tenure(&self, tenure: &ConsensusHash) -> Result<bool, DBError> {
+        let query = "SELECT 1 FROM blocks WHERE consensus_hash = ? AND (signed_self IS NOT NULL OR signed_group IS NOT NULL OR approved_time IS NOT NULL) LIMIT 1;";
+        let result: Option<u64> = query_row(&self.db, query, [tenure])?;
 
         Ok(result.is_some())
     }
 
-    /// Return the first signed block in a tenure (identified by its consensus hash)
-    pub fn get_first_signed_block_in_tenure(
+    /// Return the first approved/signed block in a tenure (identified by its consensus hash)
+    pub fn get_first_approved_block_in_tenure(
         &self,
         tenure: &ConsensusHash,
     ) -> Result<Option<BlockInfo>, DBError> {
-        let query = "SELECT block_info FROM blocks WHERE consensus_hash = ? AND signed_over = 1 ORDER BY stacks_height ASC LIMIT 1";
+        let query = "SELECT block_info FROM blocks WHERE consensus_hash = ? AND (signed_self IS NOT NULL OR signed_group IS NOT NULL OR approved_time IS NOT NULL) ORDER BY stacks_height ASC LIMIT 1";
         let result: Option<String> = query_row(&self.db, query, [tenure])?;
 
         try_deserialize(result)
@@ -1223,23 +1266,23 @@ impl SignerDb {
         try_deserialize(result)
     }
 
-    /// Return the last globally accepted block self_signed time in a given tenure (identified by its consensus hash).
-    pub fn get_last_globally_accepted_block_signed_self(
+    /// Return the last globally accepted block approved_time in a given tenure (identified by its consensus hash).
+    pub fn get_last_globally_accepted_approved_time(
         &self,
         tenure: &ConsensusHash,
     ) -> Result<Option<SystemTime>, DBError> {
         let query = r#"
-            SELECT signed_self
+            SELECT approved_time
             FROM blocks
             WHERE consensus_hash = ?1
             AND state = ?2
-            AND signed_self IS NOT NULL
+            AND approved_time IS NOT NULL
             ORDER BY burn_block_height DESC
             LIMIT 1;
         "#;
         let args = params![tenure, &BlockState::GloballyAccepted.to_string()];
         let result: Option<u64> = query_row(&self.db, query, args)?;
-        Ok(result.map(|signed_self| UNIX_EPOCH + Duration::from_secs(signed_self)))
+        Ok(result.map(|approved_time| UNIX_EPOCH + Duration::from_secs(approved_time)))
     }
 
     /// Return the canonical tip -- the last globally accepted block.
@@ -1345,7 +1388,6 @@ impl SignerDb {
             serde_json::to_string(&block_info).expect("Unable to serialize block info");
         let hash = &block_info.signer_signature_hash();
         let block_id = &block_info.block.block_id();
-        let signed_over = block_info.signed_over;
         let vote = block_info
             .vote
             .as_ref()
@@ -1356,14 +1398,13 @@ impl SignerDb {
             "burn_block_height" => %block_info.burn_block_height,
             "signer_signature_hash" => %hash,
             "block_id" => %block_id,
-            "signed" => %signed_over,
             "broadcasted" => ?broadcasted,
             "vote" => vote
         );
         self.db.execute(
             "INSERT OR REPLACE INTO blocks 
-              (reward_cycle, burn_block_height, signer_signature_hash, block_info, signed_over,
-               broadcasted, stacks_height, consensus_hash, valid, state, signed_group, signed_self,
+              (reward_cycle, burn_block_height, signer_signature_hash, block_info,
+               broadcasted, stacks_height, consensus_hash, valid, state, signed_group, signed_self, approved_time,
                proposed_time, validation_time_ms, tenure_change, tenure_change_cause)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
             params![
@@ -1371,7 +1412,6 @@ impl SignerDb {
                 u64_to_sql(block_info.burn_block_height)?,
                 hash.to_string(),
                 block_json,
-                &block_info.signed_over,
                 &broadcasted,
                 u64_to_sql(block_info.block.header.chain_length)?,
                 block_info.block.header.consensus_hash.to_hex(),
@@ -1379,6 +1419,7 @@ impl SignerDb {
                 &block_info.state.to_string(),
                 &block_info.signed_group,
                 &block_info.signed_self,
+                &block_info.approved_time,
                 &block_info.proposed_time,
                 &block_info.validation_time_ms,
                 &block_info.is_tenure_change(),
@@ -2265,7 +2306,7 @@ pub mod tests {
         db.insert_block(&block_info).unwrap();
 
         assert!(db
-            .get_first_signed_block_in_tenure(&block_proposal.block.header.consensus_hash)
+            .get_first_approved_block_in_tenure(&block_proposal.block.header.consensus_hash)
             .unwrap()
             .is_none());
 
@@ -2275,7 +2316,7 @@ pub mod tests {
         db.insert_block(&block_info).unwrap();
 
         let fetched_info = db
-            .get_first_signed_block_in_tenure(&block_proposal.block.header.consensus_hash)
+            .get_first_approved_block_in_tenure(&block_proposal.block.header.consensus_hash)
             .unwrap()
             .unwrap();
         assert_eq!(fetched_info, block_info);
@@ -3130,8 +3171,7 @@ pub mod tests {
         ));
 
         // locally accepted still returns 0
-        block_info.signed_over = true;
-        block_info.state = BlockState::LocallyAccepted;
+        block_info.mark_locally_accepted(false).unwrap();
         block_info.block.header.chain_length = 1;
         db.insert_block(&block_info).unwrap();
 
@@ -3141,13 +3181,10 @@ pub mod tests {
             0
         );
 
-        block_info.signed_over = true;
-        block_info.state = BlockState::GloballyAccepted;
+        block_info.mark_globally_accepted().unwrap();
         block_info.block.header.chain_length = 2;
         db.insert_block(&block_info).unwrap();
 
-        block_info.signed_over = true;
-        block_info.state = BlockState::GloballyAccepted;
         block_info.block.header.chain_length = 3;
         db.insert_block(&block_info).unwrap();
 
@@ -3158,8 +3195,7 @@ pub mod tests {
         );
 
         // add an unsigned block
-        block_info.signed_over = false;
-        block_info.state = BlockState::GloballyAccepted;
+        block_info.signed_group = None;
         block_info.block.header.chain_length = 4;
         db.insert_block(&block_info).unwrap();
 
@@ -3170,7 +3206,6 @@ pub mod tests {
         );
 
         // add a locally signed block
-        block_info.signed_over = true;
         block_info.state = BlockState::LocallyAccepted;
         block_info.block.header.chain_length = 5;
         db.insert_block(&block_info).unwrap();
@@ -3183,7 +3218,7 @@ pub mod tests {
     }
 
     #[test]
-    fn has_signed_block() {
+    fn has_approved_block() {
         let db_path = tmp_db_path();
         let consensus_hash_1 = ConsensusHash([0x01; 20]);
         let consensus_hash_2 = ConsensusHash([0x02; 20]);
@@ -3193,30 +3228,30 @@ pub mod tests {
             b.block.header.chain_length = 1;
         });
 
-        assert!(!db.has_signed_block_in_tenure(&consensus_hash_1).unwrap());
-        assert!(!db.has_signed_block_in_tenure(&consensus_hash_2).unwrap());
+        assert!(!db.has_approved_block_in_tenure(&consensus_hash_1).unwrap());
+        assert!(!db.has_approved_block_in_tenure(&consensus_hash_2).unwrap());
 
-        block_info.signed_over = true;
+        block_info.mark_pre_committed().unwrap();
         db.insert_block(&block_info).unwrap();
 
-        assert!(db.has_signed_block_in_tenure(&consensus_hash_1).unwrap());
-        assert!(!db.has_signed_block_in_tenure(&consensus_hash_2).unwrap());
+        assert!(db.has_approved_block_in_tenure(&consensus_hash_1).unwrap());
+        assert!(!db.has_approved_block_in_tenure(&consensus_hash_2).unwrap());
 
         block_info.block.header.consensus_hash = consensus_hash_2.clone();
         block_info.block.header.chain_length = 2;
-        block_info.signed_over = false;
+        block_info.approved_time = None;
 
         db.insert_block(&block_info).unwrap();
 
-        assert!(db.has_signed_block_in_tenure(&consensus_hash_1).unwrap());
-        assert!(!db.has_signed_block_in_tenure(&consensus_hash_2).unwrap());
+        assert!(db.has_approved_block_in_tenure(&consensus_hash_1).unwrap());
+        assert!(!db.has_approved_block_in_tenure(&consensus_hash_2).unwrap());
 
-        block_info.signed_over = true;
+        block_info.signed_self = Some(get_epoch_time_secs());
 
         db.insert_block(&block_info).unwrap();
 
-        assert!(db.has_signed_block_in_tenure(&consensus_hash_1).unwrap());
-        assert!(db.has_signed_block_in_tenure(&consensus_hash_2).unwrap());
+        assert!(db.has_approved_block_in_tenure(&consensus_hash_1).unwrap());
+        assert!(db.has_approved_block_in_tenure(&consensus_hash_2).unwrap());
     }
 
     #[test]
@@ -3249,7 +3284,7 @@ pub mod tests {
             .is_none());
     }
 
-    /// BlockInfo without the `reject_reason` field for backwards compatibility testing
+    /// BlockInfo without the `reject_reason` or `approved_time` field for backwards compatibility testing
     #[derive(Serialize, Deserialize, Debug, PartialEq)]
     pub struct BlockInfoPrev {
         /// The block we are considering
@@ -3309,8 +3344,8 @@ pub mod tests {
         assert_eq!(block_info.reward_cycle, block_info_prev.reward_cycle);
         assert_eq!(block_info.vote, block_info_prev.vote);
         assert_eq!(block_info.valid, block_info_prev.valid);
-        assert_eq!(block_info.signed_over, block_info_prev.signed_over);
         assert_eq!(block_info.proposed_time, block_info_prev.proposed_time);
+        assert_eq!(block_info.approved_time, block_info_prev.signed_self);
         assert_eq!(block_info.signed_self, block_info_prev.signed_self);
         assert_eq!(block_info.signed_group, block_info_prev.signed_group);
         assert_eq!(block_info.state, block_info_prev.state);
@@ -3630,21 +3665,21 @@ pub mod tests {
     }
 
     #[test]
-    fn test_get_last_globally_accepted_block_signed_self() {
+    fn test_get_last_globally_accepted_block_approved_time() {
         let db_path = tmp_db_path();
         let mut db = SignerDb::new(db_path).expect("Failed to create signer db");
 
         let consensus_hash_1 = ConsensusHash([0x01; 20]);
         let consensus_hash_2 = ConsensusHash([0x02; 20]);
 
-        // Create blocks with different burn heights and signed_self timestamps (seconds since epoch)
+        // Create blocks with different burn heights and approved_time (seconds since epoch)
         let (mut block_info_1, _block_proposal) = create_block_override(|b| {
             b.block.header.consensus_hash = consensus_hash_1.clone();
             b.block.header.miner_signature = MessageSignature([0x01; 65]);
             b.block.header.chain_length = 1;
             b.burn_height = 1;
         });
-        block_info_1.mark_locally_accepted(false).unwrap();
+        block_info_1.mark_pre_committed().unwrap();
         let (mut block_info_2, _block_proposal) = create_block_override(|b| {
             b.block.header.consensus_hash = consensus_hash_1.clone();
             b.block.header.miner_signature = MessageSignature([0x02; 65]);
@@ -3668,14 +3703,14 @@ pub mod tests {
         db.insert_block(&block_info_2).unwrap();
         db.insert_block(&block_info_3).unwrap();
 
-        // Query for consensus_hash_1 should return signed_self of block_info_2 (highest burn_height)
-        db.get_last_globally_accepted_block_signed_self(&consensus_hash_1)
+        // Query for consensus_hash_1 should return approved_time of block_info_2 (highest burn_height)
+        db.get_last_globally_accepted_approved_time(&consensus_hash_1)
             .unwrap()
-            .expect("Expected a signed_self timestamp");
+            .expect("Expected a approved_time timestamp");
 
         // Query for consensus_hash_2 should return none since we only contributed to a locally signed block
         let result_2 = db
-            .get_last_globally_accepted_block_signed_self(&consensus_hash_2)
+            .get_last_globally_accepted_approved_time(&consensus_hash_2)
             .unwrap();
 
         assert!(result_2.is_none());
@@ -3683,7 +3718,7 @@ pub mod tests {
         // Query for a consensus hash with no blocks should return None
         let consensus_hash_3 = ConsensusHash([0x03; 20]);
         let result_3 = db
-            .get_last_globally_accepted_block_signed_self(&consensus_hash_3)
+            .get_last_globally_accepted_approved_time(&consensus_hash_3)
             .unwrap();
 
         assert!(result_3.is_none());
