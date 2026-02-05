@@ -185,7 +185,7 @@ pub struct BlockInfo {
     pub reward_cycle: u64,
     /// Our vote on the block if we have one yet
     pub vote: Option<NakamotoBlockVote>,
-    /// Whether the block contents are valid
+    /// Whether the block contents are valid according to our local and node validation. None if not yet validated.
     pub valid: Option<bool>,
     /// Time at which the proposal was received by this signer (epoch time in seconds)
     pub proposed_time: u64,
@@ -244,7 +244,7 @@ impl BlockInfo {
         Some(tenure_change.cause)
     }
 
-    /// Mark this block as valid and pre-committed.
+    /// Mark this block as valid and pre-committed. Records an approved time timestamp in the block info if it wasn't already set.
     pub fn mark_pre_committed(&mut self) -> Result<(), String> {
         self.move_to(BlockState::PreCommitted)?;
         self.valid = Some(true);
@@ -252,25 +252,23 @@ impl BlockInfo {
         Ok(())
     }
 
-    /// Mark this block as locally accepted, valid, signed over, and records either the approved and self signed timestamps
-    ///  or group signed timestamp in the block info if it wasn't already set.
+    /// Mark this block as locally accepted and record the appropriate timestamps if they are not already set.
     pub fn mark_locally_accepted(&mut self, group_signed: bool) -> Result<(), String> {
         self.move_to(BlockState::LocallyAccepted)?;
-        self.valid = Some(true);
         if group_signed {
             self.signed_group.get_or_insert(get_epoch_time_secs());
         } else {
+            self.valid = Some(true);
             self.approved_time.get_or_insert(get_epoch_time_secs());
             self.signed_self.get_or_insert(get_epoch_time_secs());
         }
         Ok(())
     }
 
-    /// Mark this block as valid, signed over, and records a group timestamp in the block info if it wasn't
+    /// Mark this block signed over, and records a group timestamp in the block info if it wasn't
     ///  already set.
-    fn mark_globally_accepted(&mut self) -> Result<(), String> {
+    pub fn mark_globally_accepted(&mut self) -> Result<(), String> {
         self.move_to(BlockState::GloballyAccepted)?;
-        self.valid = Some(true);
         self.signed_group.get_or_insert(get_epoch_time_secs());
         Ok(())
     }
@@ -282,10 +280,9 @@ impl BlockInfo {
         Ok(())
     }
 
-    /// Mark the block as globally rejected and invalid
-    fn mark_globally_rejected(&mut self) -> Result<(), String> {
+    /// Mark the block as globally rejected
+    pub fn mark_globally_rejected(&mut self) -> Result<(), String> {
         self.move_to(BlockState::GloballyRejected)?;
-        self.valid = Some(false);
         Ok(())
     }
 
@@ -338,6 +335,12 @@ impl BlockInfo {
             self.state,
             BlockState::PreCommitted | BlockState::LocallyAccepted | BlockState::LocallyRejected
         )
+    }
+
+    /// Check if the block is globally accepted and this signer has responded to it
+    pub fn globally_approved_and_responded(&self) -> bool {
+        matches!(self.state, BlockState::GloballyAccepted)
+            && (self.signed_self.is_some() || self.valid == Some(false))
     }
 }
 
@@ -1605,7 +1608,7 @@ impl SignerDb {
         let qry = "UPDATE blocks SET broadcasted = ?1 WHERE signer_signature_hash = ?2";
         let args = params![u64_to_sql(ts)?, block_sighash];
 
-        debug!("Marking block {} as broadcasted at {}", block_sighash, ts);
+        debug!("Marking block {block_sighash} as broadcasted at {ts}");
         self.db.execute(qry, args)?;
         Ok(())
     }
@@ -1811,25 +1814,6 @@ impl SignerDb {
         tenure_extend_timestamp
     }
 
-    /// Mark a block as globally accepted. This removes the block from the pending
-    /// validations table. This does **not** update the block's state in SignerDb.
-    pub fn mark_block_globally_accepted(&self, block_info: &mut BlockInfo) -> Result<(), DBError> {
-        block_info
-            .mark_globally_accepted()
-            .map_err(DBError::Other)?;
-        self.remove_pending_block_validation(&block_info.signer_signature_hash())?;
-        Ok(())
-    }
-
-    /// Mark a block as globally rejected. This removes the block from the pending
-    /// validations table. This does **not** update the block's state in SignerDb.
-    pub fn mark_block_globally_rejected(&self, block_info: &mut BlockInfo) -> Result<(), DBError> {
-        block_info
-            .mark_globally_rejected()
-            .map_err(DBError::Other)?;
-        self.remove_pending_block_validation(&block_info.signer_signature_hash())?;
-        Ok(())
-    }
     /// Update the tenure (identified by consensus_hash) last activity timestamp
     pub fn update_last_activity_time(
         &mut self,

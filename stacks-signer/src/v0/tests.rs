@@ -103,6 +103,7 @@ impl Signer {
                 if !block_info.has_reached_consensus() {
                     warn!("{self}: Failed to mark block as locally rejected: {e:?}");
                 }
+                block_info.valid = Some(false);
             };
 
             block_info.reject_reason = Some(RejectReason::TestingDirective);
@@ -120,19 +121,19 @@ impl Signer {
     }
 
     /// Pause the block broadcast if the TEST_PAUSE_BLOCK_BROADCAST flag is set
-    pub fn test_pause_block_broadcast(&self, block_info: &BlockInfo) {
+    pub fn test_pause_block_broadcast(&self, block: &NakamotoBlock) {
         if TEST_PAUSE_BLOCK_BROADCAST.get() {
             // Do an extra check just so we don't log EVERY time.
             warn!("{self}: Block broadcast is stalled due to testing directive.";
-                "block_id" => %block_info.block.block_id(),
-                "height" => block_info.block.header.chain_length,
+                "block_id" => %block.block_id(),
+                "height" => block.header.chain_length,
             );
             while TEST_PAUSE_BLOCK_BROADCAST.get() {
                 std::thread::sleep(std::time::Duration::from_millis(10));
             }
             info!("{self}: Block validation is no longer stalled due to testing directive.";
-                "block_id" => %block_info.block.block_id(),
-                "height" => block_info.block.header.chain_length,
+                "block_id" => %block.block_id(),
+                "height" => block.header.chain_length,
             );
         }
     }

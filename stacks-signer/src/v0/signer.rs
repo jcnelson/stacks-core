@@ -452,6 +452,8 @@ impl Signer {
     /// Returns a BlockResponse if we have already validated the block
     /// Returns None otherwise
     fn determine_response(&mut self, block_info: &BlockInfo) -> Option<BlockResponse> {
+        // We will only have the valid field set if we have already validated this block
+        // against our stacks-node/local state.
         let valid = block_info.valid?;
         let response = if valid {
             debug!("{self}: Accepting block {}", block_info.block.block_id());
@@ -574,10 +576,6 @@ impl Signer {
                                 "block_height" => b.header.chain_length,
                                 "signer_signature_hash" => %b.header.signer_signature_hash(),
                             );
-                            #[cfg(any(test, feature = "testing"))]
-                            if self.test_skip_block_broadcast(b) {
-                                continue;
-                            }
                             self.handle_post_block(stacks_client, b);
                         }
                         SignerMessage::MockProposal(mock_proposal) => {
@@ -676,7 +674,7 @@ impl Signer {
                         // We have already globally accepted this block. Do nothing.
                         return;
                     }
-                    if let Err(e) = self.signer_db.mark_block_globally_accepted(&mut block_info) {
+                    if let Err(e) = block_info.mark_globally_accepted() {
                         warn!("{self}: Failed to mark block as globally accepted: {e:?}");
                         return;
                     }
@@ -1007,71 +1005,6 @@ impl Signer {
         }
     }
 
-    /// Check if we have enough pre-commits to reach consensus for a block
-    /// and whether we should issue our block acceptance signature
-    fn should_issue_block_accept_signature(&mut self, block_info: &BlockInfo) -> bool {
-        let block_hash = block_info.block.header.signer_signature_hash();
-        // do we have enough pre-commits to reach consensus?
-        // i.e. is the threshold reached?
-        let committers = self
-            .signer_db
-            .get_block_pre_committers(&block_hash)
-            .unwrap_or_else(|_| panic!("{self}: Failed to load block commits"));
-
-        let commit_weight = self.compute_signature_signing_weight(committers.iter());
-        let total_weight = self.compute_signature_total_weight();
-
-        let min_weight = NakamotoBlockHeader::compute_voting_weight_threshold(total_weight)
-            .unwrap_or_else(|_| {
-                panic!("{self}: Failed to compute threshold weight for {total_weight}")
-            });
-
-        if min_weight > commit_weight {
-            debug!(
-                "{self}: Not enough pre-committed to block {block_hash} (have {commit_weight}, need at least {min_weight}/{total_weight})"
-            );
-            return false;
-        }
-
-        let Some(valid) = block_info.valid else {
-            debug!(
-                "{self}: Enough pre-committed to block {block_hash}, but we do not yet know if the block is valid. Doing nothing."
-            );
-            return false;
-        };
-        // have enough commits, so maybe we should actually broadcast our signature...
-        if !valid {
-            // We already marked this block as invalid. We should not do anything further as we do not change our votes on rejected blocks.
-            debug!(
-                "{self}: Enough pre-committed to block {block_hash}, but we do not view the block as valid. Doing nothing."
-            );
-            return false;
-        }
-        true
-    }
-
-    fn issue_block_accept_signature(
-        &mut self,
-        stacks_client: &StacksClient,
-        block_info: &mut BlockInfo,
-    ) {
-        // It is only considered globally accepted IFF we receive a new block event confirming it OR see the chain tip of the node advance to it.
-        if let Err(e) = block_info.mark_locally_accepted(false) {
-            if !block_info.has_reached_consensus() {
-                warn!("{self}: Failed to mark block as locally accepted: {e:?}",);
-            }
-            block_info.signed_self.get_or_insert(get_epoch_time_secs());
-        }
-
-        self.signer_db
-            .insert_block(block_info)
-            .unwrap_or_else(|e| self.handle_insert_block_error(e));
-        let accepted = self.create_block_acceptance(&block_info.block);
-        // have to save the signature _after_ the block info
-        self.handle_block_signature(stacks_client, &accepted);
-        self.send_block_response(&block_info.block, accepted.into());
-    }
-
     /// Handle signer state update message
     fn handle_state_machine_update(
         &mut self,
@@ -1120,20 +1053,62 @@ impl Signer {
             .add_block_pre_commit(block_hash, stacker_address)
             .unwrap_or_else(|_| panic!("{self}: Failed to save block pre-commit"));
 
-        if block_info.state == BlockState::LocallyAccepted
-            || block_info.state == BlockState::LocallyRejected
-        {
+        if block_info.signed_self.is_some() {
             debug!(
-                "{self}: Received pre-commit for a block that we have already responded to. Doing nothing.",
+                "{self}: Received a pre-commit for a block that we have already signed. Ignoring...",
             );
             return;
         }
 
-        // do we have enough pre-commits to reach consensus?
-        if !self.should_issue_block_accept_signature(&block_info) {
+        if !block_info.valid.unwrap_or(false) {
+            // We already marked this block as invalid. We should not do anything further as we do not change our votes on rejected blocks
+            // unless we receive a new block proposal for it and the reject reason allows us to reconsider.
+            debug!(
+                "{self}: Received a pre-commit for a block that we have not determined to be valid: {:?}. Ignoring...", block_info.valid
+            );
             return;
         }
-        self.issue_block_accept_signature(stacks_client, &mut block_info);
+
+        let block_hash = block_info.block.header.signer_signature_hash();
+        // do we have enough pre-commits to reach consensus?
+        // i.e. is the threshold reached?
+        let committers = self
+            .signer_db
+            .get_block_pre_committers(&block_hash)
+            .unwrap_or_else(|_| panic!("{self}: Failed to load block commits"));
+
+        let commit_weight = self.compute_signature_signing_weight(committers.iter());
+        let total_weight = self.compute_signature_total_weight();
+
+        let min_weight = NakamotoBlockHeader::compute_voting_weight_threshold(total_weight)
+            .unwrap_or_else(|_| {
+                panic!("{self}: Failed to compute threshold weight for {total_weight}")
+            });
+
+        if min_weight > commit_weight {
+            debug!(
+                "{self}: Not enough pre-committed to block {block_hash} (have {commit_weight}, need at least {min_weight}/{total_weight})"
+            );
+            return;
+        }
+
+        // It is only considered globally accepted IFF we receive a new block event confirming it OR see the chain tip of the node advance to it.
+        if let Err(e) = block_info.mark_locally_accepted(false) {
+            if !block_info.has_reached_consensus() {
+                warn!("{self}: Failed to mark block as locally accepted: {e:?}",);
+            }
+            block_info
+                .approved_time
+                .get_or_insert(get_epoch_time_secs());
+            block_info.signed_self.get_or_insert(get_epoch_time_secs());
+        }
+        self.signer_db
+            .insert_block(&block_info)
+            .unwrap_or_else(|e| self.handle_insert_block_error(e));
+        let accepted = self.create_block_acceptance(&block_info.block);
+        // have to save the signature _after_ the block info
+        self.handle_block_signature(stacks_client, &accepted);
+        self.send_block_response(&block_info.block, accepted.into());
     }
 
     /// Handle block proposal messages submitted to signers stackerdb
@@ -1175,8 +1150,8 @@ impl Signer {
         //  the signer needs to be able to determine whether or not the block they're about to sign would conflict with an already-signed Stacks block
         let signer_signature_hash = block_proposal.block.header.signer_signature_hash();
         if let Some(block_info) = self.block_lookup_by_reward_cycle(&signer_signature_hash) {
-            if block_info.state == BlockState::GloballyAccepted {
-                info!("{self}: Received a block proposal for a block that is already globally accepted. Ignoring...";
+            if block_info.globally_approved_and_responded() {
+                info!("{self}: received a block proposal for a globally accepted block to which we have already responded. Ignoring.";
                     "signer_signature_hash" => %signer_signature_hash,
                     "block_id" => %block_proposal.block.block_id(),
                     "block_height" => block_proposal.block.header.chain_length,
@@ -1184,26 +1159,35 @@ impl Signer {
                     "consensus_hash" => %block_proposal.block.header.consensus_hash,
                     "timestamp" => block_proposal.block.header.timestamp,
                     "signed_group" => block_info.signed_group,
-                    "signed_self" => block_info.signed_self
+                    "signed_self" => block_info.signed_self,
+                    "valid" => ?block_info.valid
                 );
                 return;
             }
             if !should_reevaluate_block(&block_info) {
                 return self.handle_prior_proposal_eval(&block_info);
             }
-            debug!("Received a proposal for this block before, but our rejection reason allows us to reconsider";
-                "reject_reason" => ?block_info.reject_reason);
+            info!(
+                "{self}: received a block proposal for this block before, but our rejection reason allows us to reconsider";
+                "reject_reason" => ?block_info.reject_reason,
+                "signer_signature_hash" => %signer_signature_hash,
+                "block_id" => %block_proposal.block.block_id(),
+                "block_height" => block_proposal.block.header.chain_length,
+                "burn_height" => block_proposal.burn_height,
+                "consensus_hash" => %block_proposal.block.header.consensus_hash
+            );
+        } else {
+            info!(
+                "{self}: received a block proposal for a new block.";
+                "signer_signature_hash" => %signer_signature_hash,
+                "block_id" => %block_proposal.block.block_id(),
+                "block_height" => block_proposal.block.header.chain_length,
+                "burn_height" => block_proposal.burn_height,
+                "consensus_hash" => %block_proposal.block.header.consensus_hash,
+            );
         }
-
-        info!(
-            "{self}: received a block proposal for a new block.";
-            "signer_signature_hash" => %signer_signature_hash,
-            "block_id" => %block_proposal.block.block_id(),
-            "block_height" => block_proposal.block.header.chain_length,
-            "burn_height" => block_proposal.burn_height,
-            "consensus_hash" => %block_proposal.block.header.consensus_hash,
-        );
         crate::monitoring::actions::increment_block_proposals_received();
+        // Creating a new proposal will overwrite any prior proposal info on the block if it exists, e.g. validity, signed_timestamps, etc.
         #[cfg(any(test, feature = "testing"))]
         let mut block_info = BlockInfo::from(block_proposal.clone());
         #[cfg(not(any(test, feature = "testing")))]
@@ -1428,8 +1412,24 @@ impl Signer {
             debug!("{self}: Received a block validate response for a block we have not seen before. Ignoring...");
             return;
         };
-        if block_info.is_locally_finalized() || block_info.has_reached_consensus() {
-            debug!("{self}: Received block validation for a block that is already marked as {}. Ignoring...", block_info.state);
+
+        // Record the block validation time but do not consider stx transfers or boot contract calls
+        block_info.validation_time_ms = if block_validate_ok.cost.is_zero() {
+            Some(0)
+        } else {
+            Some(block_validate_ok.validation_time_ms)
+        };
+
+        self.signer_db
+            .insert_block(&block_info)
+            .unwrap_or_else(|e| self.handle_insert_block_error(e));
+
+        if block_info.valid.is_some() {
+            // We should only have valid set if we have already processed a validation response for this block OR we locally marked it as rejected.
+            // and responded to it. If we received a new proposal for it, we would have reset valid to None.
+            warn!(
+                "{self}: Already processed a block validate response for block {}. Ignoring validation response.", block_info.block.header.signer_signature_hash(); "valid" => ?block_info.valid,
+            );
             return;
         }
 
@@ -1441,6 +1441,7 @@ impl Signer {
                 if !block_info.has_reached_consensus() {
                     warn!("{self}: Failed to mark block as locally rejected: {e:?}");
                 }
+                block_info.valid = Some(false);
             };
             self.signer_db
                 .insert_block(&block_info)
@@ -1450,17 +1451,14 @@ impl Signer {
         } else {
             if let Err(e) = block_info.mark_pre_committed() {
                 if !block_info.has_reached_consensus() {
-                    warn!("{self}: Failed to mark block as locally accepted: {e:?}",);
+                    warn!("{self}: Failed to mark block as approved: {e:?}",);
                     return;
                 }
-                block_info.signed_self.get_or_insert(get_epoch_time_secs());
+                block_info.valid = Some(true);
+                block_info
+                    .approved_time
+                    .get_or_insert(get_epoch_time_secs());
             }
-            // Record the block validation time but do not consider stx transfers or boot contract calls
-            block_info.validation_time_ms = if block_validate_ok.cost.is_zero() {
-                Some(0)
-            } else {
-                Some(block_validate_ok.validation_time_ms)
-            };
 
             self.signer_db
                 .insert_block(&block_info)
@@ -1493,13 +1491,19 @@ impl Signer {
             debug!("{self}: Received a block validate response for a block we have not seen before. Ignoring...");
             return;
         };
-        if block_info.is_locally_finalized() || block_info.has_reached_consensus() {
-            debug!("{self}: Received block validation for a block that is already marked as {}. Ignoring...", block_info.state);
+        if block_info.valid.is_some() {
+            // We should only have valid set if we have already processed a validation response for this block OR we locally marked it as rejected.
+            // and responded to it. If we received a new proposal for it, we would have reset valid to None.
+            warn!(
+                "{self}: Already processed a block validate response for block {}. Ignoring validation response.", block_info.block.header.signer_signature_hash(); "valid" => ?block_info.valid,
+            );
             return;
         }
         if let Err(e) = block_info.mark_locally_rejected() {
-            warn!("{self}: Failed to mark block as locally rejected: {e:?}",);
-            return;
+            if !block_info.has_reached_consensus() {
+                warn!("{self}: Failed to mark block as locally rejected: {e:?}",);
+            }
+            block_info.valid = Some(false);
         }
         let block_rejection = BlockRejection::from_validate_rejection(
             block_validate_reject.clone(),
@@ -1643,6 +1647,7 @@ impl Signer {
             if !block_info.has_reached_consensus() {
                 warn!("{self}: Failed to mark block as locally rejected: {e:?}");
             }
+            block_info.valid = Some(false);
         };
         self.send_block_response(&block_info.block, rejection.into());
 
@@ -1701,10 +1706,6 @@ impl Signer {
             );
             return;
         };
-        if block_info.has_reached_consensus() {
-            debug!("{self}: Received block rejection for a block that is already marked as {}. Ignoring...", block_info.state);
-            return;
-        }
 
         // recover public key
         let Ok(public_key) = rejection.recover_public_key() else {
@@ -1727,6 +1728,7 @@ impl Signer {
             return;
         }
 
+        // We should still store signatures even on consensus reached blocks for auditing purposes.
         // signature is valid! store it
         match self.signer_db.add_block_rejection_signer_addr(
             block_hash,
@@ -1739,7 +1741,11 @@ impl Signer {
             Ok(false) => return, // We already have this signature, do not process it again.
             Ok(true) => (),
         }
-        block_info.reject_reason = Some(rejection.response_data.reject_reason.clone());
+
+        if block_info.has_reached_consensus() {
+            // Checking the rejection signatures is pointless. We have already reached consensus on this block.
+            return;
+        }
 
         // do we have enough signatures to mark a block a globally rejected?
         // i.e. is (set-size) - (threshold) + 1 reached.
@@ -1782,23 +1788,13 @@ impl Signer {
             "total_weight" => total_weight,
             "percent_rejected" => (total_reject_weight as f64 / total_weight as f64 * 100.0),
         );
-        if let Err(e) = self.signer_db.mark_block_globally_rejected(&mut block_info) {
+        if let Err(e) = block_info.mark_globally_rejected() {
             warn!("{self}: Failed to mark block as globally rejected: {e:?}",);
         }
         if let Err(e) = self.signer_db.insert_block(&block_info) {
             error!("{self}: Failed to update block state: {e:?}",);
             panic!("{self} Failed to update block state: {e}");
         }
-        if self
-            .submitted_block_proposal
-            .as_ref()
-            .map(|(proposal_signer_sighash, _)| proposal_signer_sighash == block_hash)
-            .unwrap_or(false)
-        {
-            // Consensus reached! No longer bother tracking its validation submission to the node as we are too late to participate in the decision anyway.
-            self.submitted_block_proposal = None;
-        }
-
         // NOTE: This is only used by active signer protocol versions < Global state activation
         // If 30% of the signers have rejected the block due to an invalid
         // reorg, mark the miner as invalid.
@@ -1846,10 +1842,6 @@ impl Signer {
             );
             return;
         };
-        if block_info.has_reached_consensus() {
-            debug!("{self}: Received block signature for a block that is already marked as {}. Ignoring...", block_info.state);
-            return;
-        }
 
         // recover public key
         let Ok(public_key) = Secp256k1PublicKey::recover_to_pubkey(block_hash.bits(), signature)
@@ -1889,6 +1881,10 @@ impl Signer {
             return;
         }
 
+        if block_info.signed_group.is_some() {
+            // We have already processed this block to the accepted state. Adding more signatures will not change anything so nothing to check.
+            return;
+        }
         // do we have enough signatures to broadcast?
         // i.e. is the threshold reached?
         let signatures = self
@@ -1943,26 +1939,15 @@ impl Signer {
         // move block to LOCALLY accepted state.
         // It is only considered globally accepted IFF we receive a new block event confirming it OR see the chain tip of the node advance to it.
         if let Err(e) = block_info.mark_locally_accepted(true) {
-            // Do not abort as we should still try to store the block signature threshold
-            warn!("{self}: Failed to mark block as locally accepted: {e:?}");
+            if !block_info.has_reached_consensus() {
+                warn!("{self}: Failed to mark block as locally accepted: {e:?}");
+            }
         }
         let _ = self.signer_db.insert_block(&block_info).map_err(|e| {
             warn!("Failed to set group threshold signature timestamp for {block_hash}: {e:?}");
             panic!("{self} Failed to write block to signerdb: {e}");
         });
-        #[cfg(any(test, feature = "testing"))]
-        self.test_pause_block_broadcast(&block_info);
-
         self.broadcast_signed_block(stacks_client, block_info.block, &addrs_to_sigs);
-        if self
-            .submitted_block_proposal
-            .as_ref()
-            .map(|(proposal_hash, _)| proposal_hash == block_hash)
-            .unwrap_or(false)
-        {
-            // Consensus reached! No longer bother tracking its validation submission to the node as we are too late to participate in the decision anyway.
-            self.submitted_block_proposal = None;
-        }
     }
 
     fn broadcast_signed_block(
@@ -1971,6 +1956,9 @@ impl Signer {
         mut block: NakamotoBlock,
         addrs_to_sigs: &HashMap<StacksAddress, MessageSignature>,
     ) {
+        #[cfg(any(test, feature = "testing"))]
+        self.test_pause_block_broadcast(&block);
+
         // collect signatures for the block
         let signatures: Vec<_> = self
             .signer_addresses
@@ -1981,15 +1969,15 @@ impl Signer {
         block.header.signer_signature_hash();
         block.header.signer_signature = signatures;
 
-        #[cfg(any(test, feature = "testing"))]
-        if self.test_skip_block_broadcast(&block) {
-            return;
-        }
         self.handle_post_block(stacks_client, &block);
     }
 
     /// Attempt to post a block to the stacks-node and handle the result
     pub fn handle_post_block(&mut self, stacks_client: &StacksClient, block: &NakamotoBlock) {
+        #[cfg(any(test, feature = "testing"))]
+        if self.test_skip_block_broadcast(block) {
+            return;
+        }
         let block_hash = block.header.signer_signature_hash();
         match stacks_client.post_block(block) {
             Ok(accepted) => {

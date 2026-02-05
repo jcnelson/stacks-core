@@ -206,7 +206,7 @@ fn check_capitulate_miner_view() {
 
     let h = std::thread::spawn(move || {
         // Mark the old miner's block as globally accepted
-        db.mark_block_globally_accepted(&mut block_info_1).unwrap();
+        block_info_1.mark_globally_accepted().unwrap();
         db.insert_block(&block_info_1).unwrap();
 
         // Miner view should stay as the old miner as it has a globally accepted block and 60% consider it valid.
@@ -225,7 +225,7 @@ fn check_capitulate_miner_view() {
         );
 
         // Now that we have a globally approved block for the new miner
-        db.mark_block_globally_accepted(&mut block_info_2).unwrap();
+        block_info_2.mark_globally_accepted().unwrap();
         db.insert_block(&block_info_2).unwrap();
 
         assert_eq!(
