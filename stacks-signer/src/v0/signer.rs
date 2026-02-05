@@ -1073,7 +1073,7 @@ impl Signer {
 
         if block_info.signed_self.is_some() {
             debug!(
-                "{self}: Received a pre-commit for a block that we have already signed. Ignoring...",
+                "{self}: Received pre-commit for a block that we have already signed. Ignoring...",
             );
             return;
         }
@@ -1110,6 +1110,14 @@ impl Signer {
             return;
         }
 
+        if !block_info.valid.unwrap_or(false) {
+            // We already marked this block as invalid. We should not do anything further as we do not change our votes on rejected blocks
+            // unless we receive a new block proposal for it and the reject reason allows us to reconsider
+            debug!(
+                "{self}: Enough pre-committed to block {block_hash}, but we do not view the block as valid. Doing nothing..."
+            );
+            return;
+        }
         // It is only considered globally accepted IFF we receive a new block event confirming it OR see the chain tip of the node advance to it.
         if let Err(e) = block_info.mark_locally_accepted(false) {
             if !block_info.has_reached_consensus() {
