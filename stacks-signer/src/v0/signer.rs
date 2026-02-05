@@ -52,7 +52,7 @@ use crate::chainstate::{ProposalEvalConfig, SortitionData, SortitionStateVersion
 use crate::client::{ClientError, SignerSlotID, StackerDB, StacksClient};
 use crate::config::{SignerConfig, SignerConfigMode};
 use crate::runloop::SignerResult;
-use crate::signerdb::{BlockInfo, BlockState, SignerDb};
+use crate::signerdb::{BlockInfo, BlockState, PendingBlockResponses, SignerDb};
 #[cfg(not(any(test, feature = "testing")))]
 use crate::v0::signer_state::SUPPORTED_SIGNER_PROTOCOL_VERSION;
 use crate::v0::signer_state::{NewBurnBlock, ReplayScopeOpt};
@@ -533,19 +533,32 @@ impl Signer {
                         return;
                     }
                     match message {
-                        SignerMessage::BlockResponse(block_response) => self.handle_block_response(
-                            stacks_client,
-                            block_response,
-                            sortition_state,
-                        ),
+                        SignerMessage::BlockResponse(block_response) => {
+                            #[cfg(any(test, feature = "testing"))]
+                            if self.test_ignore_all_block_responses(block_response) {
+                                continue;
+                            }
+                            self.handle_block_response(
+                                stacks_client,
+                                block_response,
+                                sortition_state,
+                            )
+                        }
                         SignerMessage::StateMachineUpdate(update) => self
                             .handle_state_machine_update(signer_public_key, update, received_time),
-                        SignerMessage::BlockPreCommit(signer_signature_hash) => self
-                            .handle_block_pre_commit(
+                        SignerMessage::BlockPreCommit(signer_signature_hash) => {
+                            #[cfg(any(test, feature = "testing"))]
+                            if self
+                                .test_ignore_all_pre_commits(&signer_address, signer_signature_hash)
+                            {
+                                continue;
+                            }
+                            self.handle_block_pre_commit(
                                 stacks_client,
                                 &signer_address,
                                 signer_signature_hash,
-                            ),
+                            )
+                        }
                         _ => {}
                     }
                 }
@@ -1043,7 +1056,12 @@ impl Signer {
             "{self}: Received pre-commit from signer ({stacker_address:?}) for block ({block_hash})",
         );
         let Some(mut block_info) = self.block_lookup_by_reward_cycle(block_hash) else {
-            debug!("{self}: Received pre-commit for a block we have not seen before. Ignoring...");
+            if let Err(e) = self
+                .signer_db
+                .add_pending_block_pre_commit_response(block_hash, stacker_address)
+            {
+                warn!("{self}: Failed to save pending block pre-commit response: {e:?}");
+            }
             return;
         };
         // Always save the pre-commit - we will need to store signer responses for determining which
@@ -1149,7 +1167,9 @@ impl Signer {
         // TODO: should add a check to ignore an old burn block height if we know its outdated. Would require us to store the burn block height we last saw on the side.
         //  the signer needs to be able to determine whether or not the block they're about to sign would conflict with an already-signed Stacks block
         let signer_signature_hash = block_proposal.block.header.signer_signature_hash();
-        if let Some(block_info) = self.block_lookup_by_reward_cycle(&signer_signature_hash) {
+        let pending_responses = if let Some(block_info) =
+            self.block_lookup_by_reward_cycle(&signer_signature_hash)
+        {
             if block_info.globally_approved_and_responded() {
                 info!("{self}: received a block proposal for a globally accepted block to which we have already responded. Ignoring.";
                     "signer_signature_hash" => %signer_signature_hash,
@@ -1176,6 +1196,7 @@ impl Signer {
                 "burn_height" => block_proposal.burn_height,
                 "consensus_hash" => %block_proposal.block.header.consensus_hash
             );
+            PendingBlockResponses::empty()
         } else {
             info!(
                 "{self}: received a block proposal for a new block.";
@@ -1185,7 +1206,17 @@ impl Signer {
                 "burn_height" => block_proposal.burn_height,
                 "consensus_hash" => %block_proposal.block.header.consensus_hash,
             );
-        }
+            self.signer_db
+                .drain_pending_block_responses(&signer_signature_hash)
+                .unwrap_or_else(|e| {
+                    warn!(
+                        "{self}: Failed to drain pending block responses for block proposal: {e:?}";
+                        "signer_signature_hash" => %signer_signature_hash,
+                        "block_id" => %block_proposal.block.block_id(),
+                    );
+                    PendingBlockResponses::empty()
+                })
+        };
         crate::monitoring::actions::increment_block_proposals_received();
         // Creating a new proposal will overwrite any prior proposal info on the block if it exists, e.g. validity, signed_timestamps, etc.
         #[cfg(any(test, feature = "testing"))]
@@ -1257,6 +1288,46 @@ impl Signer {
             self.signer_db
                 .insert_block(&block_info)
                 .unwrap_or_else(|e| self.handle_insert_block_error(e));
+            for stacker_address in pending_responses.pre_commits {
+                debug!("{self}: Processing pending pre-commit.";
+                    "stacker_address" => %stacker_address,
+                    "signer_signature_hash" => %signer_signature_hash,
+                    "block_id" => %block_info.block.block_id(),
+                );
+                self.handle_block_pre_commit(
+                    stacks_client,
+                    &stacker_address,
+                    &signer_signature_hash,
+                );
+            }
+            for (stacker_address, reject_reason) in pending_responses.rejections {
+                debug!("{self}: Processing pending rejection.";
+                    "stacker_address" => %stacker_address,
+                    "signer_signature_hash" => %signer_signature_hash,
+                    "block_id" => %block_info.block.block_id(),
+                    "reject_reason" => ?reject_reason,
+                );
+                self.store_and_process_block_rejection(
+                    sortition_state,
+                    &mut block_info,
+                    &stacker_address,
+                    reject_reason,
+                );
+            }
+            let block_id = block_info.block.block_id();
+            for (stackers_address, signature) in pending_responses.signatures {
+                debug!("{self}: Processing pending signature.";
+                    "stacker_address" => %stackers_address,
+                    "signer_signature_hash" => %signer_signature_hash,
+                    "block_id" => %block_id,
+                );
+                self.store_and_process_block_signature(
+                    stacks_client,
+                    &mut block_info,
+                    &stackers_address,
+                    &signature,
+                );
+            }
         }
     }
 
@@ -1700,13 +1771,6 @@ impl Signer {
         let block_hash = &rejection.signer_signature_hash;
         let signature = &rejection.signature;
 
-        let Some(mut block_info) = self.block_lookup_by_reward_cycle(block_hash) else {
-            debug!(
-                "{self}: Received block rejection for a block we have not seen before. Ignoring..."
-            );
-            return;
-        };
-
         // recover public key
         let Ok(public_key) = rejection.recover_public_key() else {
             debug!("{self}: Received block rejection with an unrecovarable signature. Will not store.";
@@ -1728,12 +1792,48 @@ impl Signer {
             return;
         }
 
+        let Some(mut block_info) = self.block_lookup_by_reward_cycle(block_hash) else {
+            if let Err(e) = self.signer_db.add_pending_block_rejection_response(
+                block_hash,
+                &signer_address,
+                (&rejection.response_data.reject_reason).into(),
+            ) {
+                warn!("{self}: Failed to add pending block rejection response: {e:?}");
+            }
+            return;
+        };
+
+        info!("{self}: Received block rejection";
+            "signer_pubkey" => public_key.to_hex(),
+            "signer_signature_hash" => %block_hash,
+            "consensus_hash" => %block_info.block.header.consensus_hash,
+            "block_height" => block_info.block.header.chain_length,
+            "reject_reason" => ?rejection.response_data.reject_reason,
+        );
+
+        self.store_and_process_block_rejection(
+            sortition_state,
+            &mut block_info,
+            &signer_address,
+            (&rejection.response_data.reject_reason).into(),
+        );
+    }
+
+    // Store the block rejection signature and check if we have reached a consensus decision on the block because of it. If we have, update the block state accordingly.
+    fn store_and_process_block_rejection(
+        &mut self,
+        sortition_state: &mut Option<SortitionsView>,
+        block_info: &mut BlockInfo,
+        signer_address: &StacksAddress,
+        reject_reason: RejectReasonPrefix,
+    ) {
+        let block_hash = &block_info.signer_signature_hash();
         // We should still store signatures even on consensus reached blocks for auditing purposes.
         // signature is valid! store it
         match self.signer_db.add_block_rejection_signer_addr(
             block_hash,
-            &signer_address,
-            &rejection.response_data.reject_reason,
+            signer_address,
+            reject_reason,
         ) {
             Err(e) => {
                 warn!("{self}: Failed to save block rejection signature: {e:?}",);
@@ -1766,24 +1866,20 @@ impl Signer {
             });
         if total_reject_weight.saturating_add(min_weight) <= total_weight {
             // Not enough rejection signatures to make a decision
-            info!("{self}: Received block rejection";
-                "signer_pubkey" => public_key.to_hex(),
+            info!("{self}: Have not yet received enough block rejections to reach a consensus decision on this block";
                 "signer_signature_hash" => %block_hash,
                 "consensus_hash" => %block_info.block.header.consensus_hash,
                 "block_height" => block_info.block.header.chain_length,
-                "reject_reason" => ?rejection.response_data.reject_reason,
                 "total_weight_rejected" => total_reject_weight,
                 "total_weight" => total_weight,
                 "percent_rejected" => (total_reject_weight as f64 / total_weight as f64 * 100.0),
             );
             return;
         }
-        info!("{self}: Received block rejection and have reached the rejection threshold";
-            "signer_pubkey" => public_key.to_hex(),
+        info!("{self}: have reached the block rejection threshold";
             "signer_signature_hash" => %block_hash,
             "consensus_hash" => %block_info.block.header.consensus_hash,
             "block_height" => block_info.block.header.chain_length,
-            "reject_reason" => ?rejection.response_data.reject_reason,
             "total_weight_rejected" => total_reject_weight,
             "total_weight" => total_weight,
             "percent_rejected" => (total_reject_weight as f64 / total_weight as f64 * 100.0),
@@ -1791,7 +1887,7 @@ impl Signer {
         if let Err(e) = block_info.mark_globally_rejected() {
             warn!("{self}: Failed to mark block as globally rejected: {e:?}",);
         }
-        if let Err(e) = self.signer_db.insert_block(&block_info) {
+        if let Err(e) = self.signer_db.insert_block(block_info) {
             error!("{self}: Failed to update block state: {e:?}",);
             panic!("{self} Failed to update block state: {e}");
         }
@@ -1814,7 +1910,7 @@ impl Signer {
         if total_reorg_reject_weight.saturating_add(min_weight) > total_weight {
             // Mark the miner as invalid
             if let Some(sortition_state) = sortition_state {
-                let ch = block_info.block.header.consensus_hash;
+                let ch = block_info.block.header.consensus_hash.clone();
                 if sortition_state.cur_sortition.data.consensus_hash == ch {
                     info!("{self}: Marking miner as invalid for attempted reorg");
                     sortition_state.cur_sortition.miner_status =
@@ -1836,12 +1932,6 @@ impl Signer {
             "{self}: Received a block-accept signature: ({block_hash}, {signature}, {})",
             metadata.server_version
         );
-        let Some(mut block_info) = self.block_lookup_by_reward_cycle(block_hash) else {
-            debug!(
-                "{self}: Received block signature for a block we have not seen before. Ignoring..."
-            );
-            return;
-        };
 
         // recover public key
         let Ok(public_key) = Secp256k1PublicKey::recover_to_pubkey(block_hash.bits(), signature)
@@ -1864,20 +1954,46 @@ impl Signer {
             );
             return;
         }
+        let Some(mut block_info) = self.block_lookup_by_reward_cycle(block_hash) else {
+            if let Err(e) = self.signer_db.add_pending_block_signature_response(
+                block_hash,
+                &signer_address,
+                signature,
+            ) {
+                warn!("{self}: Failed to add pending block signature response: {e:?}");
+            }
+            return;
+        };
+        self.store_and_process_block_signature(
+            stacks_client,
+            &mut block_info,
+            &signer_address,
+            signature,
+        );
+    }
 
+    /// Store the block acceptance signature and check if we have reached a consensus decision on the block because of it. If we have, update the block state accordingly and broadcast the block if accepted.
+    fn store_and_process_block_signature(
+        &mut self,
+        stacks_client: &StacksClient,
+        block_info: &mut BlockInfo,
+        signer_address: &StacksAddress,
+        signature: &MessageSignature,
+    ) {
+        let block_hash = &block_info.signer_signature_hash();
         // signature is valid! store it.
         // if this returns false, it means the signature already exists in the DB, so just return.
         if !self
             .signer_db
-            .add_block_signature(block_hash, &signer_address, signature)
+            .add_block_signature(block_hash, signer_address, signature)
             .unwrap_or_else(|_| panic!("{self}: Failed to save block signature"))
         {
             return;
         }
 
         // If this isn't our own signature and we haven't seen a pre-commit from this signer yet, try treating it as a pre-commit in case the caller is running an outdated version
-        if signer_address != self.stacks_address && !self.signer_db.has_committed(block_hash, &signer_address).inspect_err(|e| warn!("Failed to check if pre-commit message already considered for {signer_address:?} for {block_hash}: {e}")).unwrap_or(false) {
-            self.handle_block_pre_commit(stacks_client, &signer_address, block_hash);
+        if signer_address != &self.stacks_address && !self.signer_db.has_committed(block_hash, signer_address).inspect_err(|e| warn!("Failed to check if pre-commit message already considered for {signer_address:?} for {block_hash}: {e}")).unwrap_or(false) {
+            self.handle_block_pre_commit(stacks_client, signer_address, block_hash);
             return;
         }
 
@@ -1914,8 +2030,7 @@ impl Signer {
             });
 
         if min_weight > signature_weight {
-            info!("{self}: Received block acceptance";
-                "signer_pubkey" => public_key.to_hex(),
+            info!("{self}: not yet received enough block acceptances to reach a consensus decision on this block";
                 "signer_signature_hash" => %block_hash,
                 "consensus_hash" => %block_info.block.header.consensus_hash,
                 "block_height" => block_info.block.header.chain_length,
@@ -1925,8 +2040,7 @@ impl Signer {
             );
             return;
         }
-        info!("{self}: Received block acceptance and have reached the threshold";
-            "signer_pubkey" => public_key.to_hex(),
+        info!("{self}: have reached the block acceptance threshold";
             "signer_signature_hash" => %block_hash,
             "consensus_hash" => %block_info.block.header.consensus_hash,
             "block_height" => block_info.block.header.chain_length,
@@ -1943,11 +2057,11 @@ impl Signer {
                 warn!("{self}: Failed to mark block as locally accepted: {e:?}");
             }
         }
-        let _ = self.signer_db.insert_block(&block_info).map_err(|e| {
+        let _ = self.signer_db.insert_block(block_info).map_err(|e| {
             warn!("Failed to set group threshold signature timestamp for {block_hash}: {e:?}");
             panic!("{self} Failed to write block to signerdb: {e}");
         });
-        self.broadcast_signed_block(stacks_client, block_info.block, &addrs_to_sigs);
+        self.broadcast_signed_block(stacks_client, block_info.block.clone(), &addrs_to_sigs);
     }
 
     fn broadcast_signed_block(
