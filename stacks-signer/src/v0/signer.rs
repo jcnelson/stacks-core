@@ -1494,7 +1494,7 @@ impl Signer {
         // For mutability reasons, we need to take the block_info out of the map and add it back after processing
         let Some(mut block_info) = self.block_lookup_by_reward_cycle(signer_signature_hash) else {
             // We have not seen this block before. Why are we getting a response for it?
-            debug!("{self}: Received a block validate response for a block we have not seen before. Ignoring...");
+            debug!("{self}: Received a block validate response for a block we have are not tracking. Ignoring...");
             return;
         };
 
@@ -1572,7 +1572,7 @@ impl Signer {
         }
         let Some(mut block_info) = self.block_lookup_by_reward_cycle(signer_signature_hash) else {
             // We have not seen this block before. Why are we getting a response for it?
-            debug!("{self}: Received a block validate response for a block we have not seen before. Ignoring...");
+            debug!("{self}: Received a block validate response for a block we are not tracking. Ignoring...");
             return;
         };
         if block_info.valid.is_some() {

@@ -739,7 +739,7 @@ ALTER TABLE blocks
     ADD COLUMN tenure_change_cause INTEGER;
 "#;
 
-// New tables for tracking per-signer unseen block proposal responses with auto-eviction
+// New tables for tracking per-signer untracked block proposal responses with auto-eviction
 static CREATE_SIGNER_PENDING_PRE_COMMIT_RESPONSES: &str = r#"
 CREATE TABLE IF NOT EXISTS signer_pending_pre_commit_responses (
     signer_signature_hash TEXT NOT NULL,
@@ -2189,7 +2189,7 @@ impl SignerDb {
             .collect();
         res
     }
-    /// Record a pending block pre-commit response for an unseen block proposal
+    /// Record a pending block pre-commit response for an untracked block proposal
     /// Automatically evicts oldest entries if this signer has more than 3 entries
     pub fn add_pending_block_pre_commit_response(
         &self,
@@ -2204,7 +2204,7 @@ impl SignerDb {
             u64_to_sql(received_time)?
         ];
 
-        debug!("Recording pending pre-commit response for unseen block.";
+        debug!("Recording pending pre-commit response for untracked block.";
             "signer_signature_hash" => %block_sighash,
             "signer_addr" => %signer_addr,
             "received_time" => received_time);
@@ -2233,7 +2233,7 @@ impl SignerDb {
         rows.collect::<Result<Vec<_>, _>>().map_err(DBError::from)
     }
 
-    /// Record a pending block signature response for an unseen block proposal
+    /// Record a pending block signature response for an untracked block proposal
     /// Automatically evicts oldest entries if this signer has more than 3 entries
     pub fn add_pending_block_signature_response(
         &self,
@@ -2250,7 +2250,7 @@ impl SignerDb {
             u64_to_sql(received_time)?
         ];
 
-        debug!("Recording pending signature response for unseen block.";
+        debug!("Recording pending signature response for untracked block.";
             "signer_signature_hash" => %block_sighash,
             "signer_addr" => %signer_addr,
             "received_time" => received_time);
@@ -2279,7 +2279,7 @@ impl SignerDb {
         rows.collect::<Result<Vec<_>, _>>().map_err(DBError::from)
     }
 
-    /// Record a pending block rejection response for an unseen block proposal
+    /// Record a pending block rejection response for an untracked block proposal
     /// Automatically evicts oldest entries if this signer has more than 3 entries
     pub fn add_pending_block_rejection_response(
         &self,
@@ -2297,7 +2297,7 @@ impl SignerDb {
             u64_to_sql(received_time)?
         ];
 
-        debug!("Recording pending rejection response for unseen block.";
+        debug!("Recording pending rejection response for untracked block.";
             "signer_signature_hash" => %block_sighash,
             "signer_addr" => %signer_addr,
             "reject_code" => reject_code,
