@@ -2213,26 +2213,6 @@ impl SignerDb {
         Ok(())
     }
 
-    /// Get the pre-commit responses for a specific block (returns all signers who pre-committed)
-    pub fn get_signer_pre_commit_responses(
-        &self,
-        block_sighash: &Sha512Trunc256Sum,
-    ) -> Result<Vec<StacksAddress>, DBError> {
-        let qry = "SELECT signer_addr FROM signer_pending_pre_commit_responses WHERE signer_signature_hash = ?1 ORDER BY received_time DESC";
-        let args = params![block_sighash.to_string()];
-
-        let mut stmt = self.db.prepare(qry)?;
-        let rows = stmt.query_map(args, |row| {
-            let addr_str: String = row.get(0)?;
-            let addr = StacksAddress::from_string(&addr_str).ok_or(
-                SqliteError::InvalidColumnType(0, addr_str.clone(), rusqlite::types::Type::Text),
-            )?;
-            Ok(addr)
-        })?;
-
-        rows.collect::<Result<Vec<_>, _>>().map_err(DBError::from)
-    }
-
     /// Record a pending block signature response for an untracked block proposal
     /// Automatically evicts oldest entries if this signer has more than 3 entries
     pub fn add_pending_block_signature_response(
@@ -2257,26 +2237,6 @@ impl SignerDb {
 
         self.db.execute(qry, args)?;
         Ok(())
-    }
-
-    /// Get the signature responses for a specific block (returns all signatures from signers)
-    pub fn get_signer_signature_responses(
-        &self,
-        block_sighash: &Sha512Trunc256Sum,
-    ) -> Result<Vec<MessageSignature>, DBError> {
-        let qry = "SELECT signature FROM signer_pending_signature_responses WHERE signer_signature_hash = ?1 ORDER BY received_time DESC";
-        let args = params![block_sighash.to_string()];
-
-        let mut stmt = self.db.prepare(qry)?;
-        let rows = stmt.query_map(args, |row| {
-            let sig_str: String = row.get(0)?;
-            let signature: MessageSignature = serde_json::from_str(&sig_str).map_err(|_| {
-                SqliteError::InvalidColumnType(0, sig_str.clone(), rusqlite::types::Type::Text)
-            })?;
-            Ok(signature)
-        })?;
-
-        rows.collect::<Result<Vec<_>, _>>().map_err(DBError::from)
     }
 
     /// Record a pending block rejection response for an untracked block proposal
@@ -2307,30 +2267,8 @@ impl SignerDb {
         Ok(())
     }
 
-    /// Get the rejection responses for a specific block (returns all rejecting signers with codes)
-    pub fn get_signer_rejection_responses(
-        &self,
-        block_sighash: &Sha512Trunc256Sum,
-    ) -> Result<Vec<(StacksAddress, RejectReasonPrefix)>, DBError> {
-        let qry = "SELECT signer_addr, reject_code FROM signer_pending_rejection_responses WHERE signer_signature_hash = ?1 ORDER BY received_time DESC";
-        let args = params![block_sighash.to_string()];
-
-        let mut stmt = self.db.prepare(qry)?;
-        let rows = stmt.query_map(args, |row| {
-            let addr_str: String = row.get(0)?;
-            let reject_code: u8 = row.get(1)?;
-            let addr = StacksAddress::from_string(&addr_str).ok_or(
-                SqliteError::InvalidColumnType(0, addr_str.clone(), rusqlite::types::Type::Text),
-            )?;
-            let reject_reason = RejectReasonPrefix::from(reject_code);
-            Ok((addr, reject_reason))
-        })?;
-
-        rows.collect::<Result<Vec<_>, _>>().map_err(DBError::from)
-    }
-
-    /// Retrieve and clear all history entries matching the given block signer_signature_hash
-    /// Returns BlockHistory containing all matching pre-commits, approval signatures, and rejections
+    /// Retrieve and clear all pending block response entries matching the given block signer_signature_hash
+    /// Returns PendingBlockResponses containing all matching pre-commits, approval signatures, and rejections
     pub fn drain_pending_block_responses(
         &self,
         block_sighash: &Sha512Trunc256Sum,
@@ -2379,17 +2317,18 @@ impl SignerDb {
         })?;
         let rejections: Vec<_> = rejections_rows.collect::<Result<Vec<_>, _>>()?;
 
-        debug!("Drained pending block responses.";
-            "signer_signature_hash" => %block_sighash,
-            "pre_commits_count" => pre_commits.len(),
-            "signatures_count" => signatures.len(),
-            "rejections_count" => rejections.len());
-
-        Ok(PendingBlockResponses {
+        let pending_block_responses = PendingBlockResponses {
             pre_commits,
             signatures,
             rejections,
-        })
+        };
+        if !pending_block_responses.is_empty() {
+            debug!("Drained pending block responses for block {block_sighash}";
+                "pre_commits_count" => pending_block_responses.pre_commits.len(),
+                "signatures_count" => pending_block_responses.signatures.len(),
+                "rejections_count" => pending_block_responses.rejections.len());
+        }
+        Ok(pending_block_responses)
     }
 }
 
@@ -2513,6 +2452,65 @@ pub mod tests {
 
     fn create_block() -> (BlockInfo, BlockProposal) {
         create_block_override(|_| {})
+    }
+
+    fn get_pending_pre_commit_responses(
+        db: &SignerDb,
+        block_sighash: &Sha512Trunc256Sum,
+    ) -> Result<Vec<StacksAddress>, DBError> {
+        let qry = "SELECT signer_addr FROM signer_pending_pre_commit_responses WHERE signer_signature_hash = ?1 ORDER BY received_time DESC";
+        let args = params![block_sighash.to_string()];
+
+        let mut stmt = db.db.prepare(qry)?;
+        let rows = stmt.query_map(args, |row| {
+            let addr_str: String = row.get(0)?;
+            let addr = StacksAddress::from_string(&addr_str).ok_or(
+                SqliteError::InvalidColumnType(0, addr_str.clone(), rusqlite::types::Type::Text),
+            )?;
+            Ok(addr)
+        })?;
+
+        rows.collect::<Result<Vec<_>, _>>().map_err(DBError::from)
+    }
+
+    fn get_pending_signature_responses(
+        db: &SignerDb,
+        block_sighash: &Sha512Trunc256Sum,
+    ) -> Result<Vec<MessageSignature>, DBError> {
+        let qry = "SELECT signature FROM signer_pending_signature_responses WHERE signer_signature_hash = ?1 ORDER BY received_time DESC";
+        let args = params![block_sighash.to_string()];
+
+        let mut stmt = db.db.prepare(qry)?;
+        let rows = stmt.query_map(args, |row| {
+            let sig_str: String = row.get(0)?;
+            let signature: MessageSignature = serde_json::from_str(&sig_str).map_err(|_| {
+                SqliteError::InvalidColumnType(0, sig_str.clone(), rusqlite::types::Type::Text)
+            })?;
+            Ok(signature)
+        })?;
+
+        rows.collect::<Result<Vec<_>, _>>().map_err(DBError::from)
+    }
+
+    fn get_pending_rejection_responses(
+        db: &SignerDb,
+        block_sighash: &Sha512Trunc256Sum,
+    ) -> Result<Vec<(StacksAddress, RejectReasonPrefix)>, DBError> {
+        let qry = "SELECT signer_addr, reject_code FROM signer_pending_rejection_responses WHERE signer_signature_hash = ?1 ORDER BY received_time DESC";
+        let args = params![block_sighash.to_string()];
+
+        let mut stmt = db.db.prepare(qry)?;
+        let rows = stmt.query_map(args, |row| {
+            let addr_str: String = row.get(0)?;
+            let reject_code: u8 = row.get(1)?;
+            let addr = StacksAddress::from_string(&addr_str).ok_or(
+                SqliteError::InvalidColumnType(0, addr_str.clone(), rusqlite::types::Type::Text),
+            )?;
+            let reject_reason = RejectReasonPrefix::from(reject_code);
+            Ok((addr, reject_reason))
+        })?;
+
+        rows.collect::<Result<Vec<_>, _>>().map_err(DBError::from)
     }
 
     /// Create a temporary db path for testing purposes
@@ -4123,7 +4121,7 @@ pub mod tests {
         }
 
         // Check block 0 has the signer
-        let responses = db.get_signer_pre_commit_responses(&blocks[0]).unwrap();
+        let responses = get_pending_pre_commit_responses(&db, &blocks[0]).unwrap();
         assert_eq!(responses.len(), 1, "Should have 1 signer for block 0");
         assert!(responses.contains(&signer));
 
@@ -4133,7 +4131,7 @@ pub mod tests {
         std::thread::sleep(std::time::Duration::from_secs(1));
 
         // Block 0 should now be evicted (oldest per signer)
-        let responses = db.get_signer_pre_commit_responses(&blocks[0]).unwrap();
+        let responses = get_pending_pre_commit_responses(&db, &blocks[0]).unwrap();
         assert_eq!(
             responses.len(),
             0,
@@ -4141,14 +4139,14 @@ pub mod tests {
         );
 
         // Blocks 1, 2, 3 should still have the signer
-        let responses = db.get_signer_pre_commit_responses(&blocks[1]).unwrap();
+        let responses = get_pending_pre_commit_responses(&db, &blocks[1]).unwrap();
         assert_eq!(responses.len(), 1, "Block 1 should have the signer");
         assert!(responses.contains(&signer));
 
-        let responses = db.get_signer_pre_commit_responses(&blocks[2]).unwrap();
+        let responses = get_pending_pre_commit_responses(&db, &blocks[2]).unwrap();
         assert_eq!(responses.len(), 1, "Block 2 should have the signer");
 
-        let responses = db.get_signer_pre_commit_responses(&blocks[3]).unwrap();
+        let responses = get_pending_pre_commit_responses(&db, &blocks[3]).unwrap();
         assert_eq!(responses.len(), 1, "Block 3 should have the signer");
 
         // Add 5th pre-commit - should evict block 1 now
@@ -4157,17 +4155,17 @@ pub mod tests {
         std::thread::sleep(std::time::Duration::from_secs(1));
 
         // Block 1 should now be evicted
-        let responses = db.get_signer_pre_commit_responses(&blocks[1]).unwrap();
+        let responses = get_pending_pre_commit_responses(&db, &blocks[1]).unwrap();
         assert_eq!(responses.len(), 0, "Block 1 should be evicted");
 
         // Blocks 2, 3, 4 should still have the signer
-        let responses = db.get_signer_pre_commit_responses(&blocks[2]).unwrap();
+        let responses = get_pending_pre_commit_responses(&db, &blocks[2]).unwrap();
         assert_eq!(responses.len(), 1, "Block 2 should have the signer");
 
-        let responses = db.get_signer_pre_commit_responses(&blocks[3]).unwrap();
+        let responses = get_pending_pre_commit_responses(&db, &blocks[3]).unwrap();
         assert_eq!(responses.len(), 1, "Block 3 should have the signer");
 
-        let responses = db.get_signer_pre_commit_responses(&blocks[4]).unwrap();
+        let responses = get_pending_pre_commit_responses(&db, &blocks[4]).unwrap();
         assert_eq!(responses.len(), 1, "Block 4 should have the signer");
     }
 
@@ -4197,7 +4195,7 @@ pub mod tests {
         }
 
         // Check block 0 has the signature
-        let responses = db.get_signer_signature_responses(&blocks[0]).unwrap();
+        let responses = get_pending_signature_responses(&db, &blocks[0]).unwrap();
         assert_eq!(responses.len(), 1, "Should have 1 signature for block 0");
         assert!(responses.contains(&signatures[0]));
 
@@ -4207,7 +4205,7 @@ pub mod tests {
         std::thread::sleep(std::time::Duration::from_secs(1));
 
         // Block 0 should now be evicted (oldest per signer)
-        let responses = db.get_signer_signature_responses(&blocks[0]).unwrap();
+        let responses = get_pending_signature_responses(&db, &blocks[0]).unwrap();
         assert_eq!(
             responses.len(),
             0,
@@ -4215,7 +4213,7 @@ pub mod tests {
         );
 
         // Blocks 1, 2, 3 should still have the signature
-        let responses = db.get_signer_signature_responses(&blocks[1]).unwrap();
+        let responses = get_pending_signature_responses(&db, &blocks[1]).unwrap();
         assert_eq!(responses.len(), 1, "Block 1 should have the signature");
         assert!(responses.contains(&signatures[1]));
 
@@ -4225,17 +4223,17 @@ pub mod tests {
         std::thread::sleep(std::time::Duration::from_secs(1));
 
         // Block 1 should now be evicted
-        let responses = db.get_signer_signature_responses(&blocks[1]).unwrap();
+        let responses = get_pending_signature_responses(&db, &blocks[1]).unwrap();
         assert_eq!(responses.len(), 0, "Block 1 should be evicted");
 
         // Blocks 2, 3, 4 should still have the signatures
-        let responses = db.get_signer_signature_responses(&blocks[2]).unwrap();
+        let responses = get_pending_signature_responses(&db, &blocks[2]).unwrap();
         assert_eq!(responses.len(), 1, "Block 2 should have the signature");
 
-        let responses = db.get_signer_signature_responses(&blocks[3]).unwrap();
+        let responses = get_pending_signature_responses(&db, &blocks[3]).unwrap();
         assert_eq!(responses.len(), 1, "Block 3 should have the signature");
 
-        let responses = db.get_signer_signature_responses(&blocks[4]).unwrap();
+        let responses = get_pending_signature_responses(&db, &blocks[4]).unwrap();
         assert_eq!(responses.len(), 1, "Block 4 should have the signature");
     }
 
@@ -4265,7 +4263,7 @@ pub mod tests {
         }
 
         // Query block 0 - should have rejection from this signer
-        let responses = db.get_signer_rejection_responses(&blocks[0]).unwrap();
+        let responses = get_pending_rejection_responses(&db, &blocks[0]).unwrap();
         assert_eq!(
             responses.len(),
             1,
@@ -4283,7 +4281,7 @@ pub mod tests {
         std::thread::sleep(std::time::Duration::from_secs(1));
 
         // Query block 0 - should now be evicted (oldest)
-        let responses = db.get_signer_rejection_responses(&blocks[0]).unwrap();
+        let responses = get_pending_rejection_responses(&db, &blocks[0]).unwrap();
         assert_eq!(
             responses.len(),
             0,
@@ -4291,11 +4289,11 @@ pub mod tests {
         );
 
         // Query block 1 - should still exist
-        let responses = db.get_signer_rejection_responses(&blocks[1]).unwrap();
+        let responses = get_pending_rejection_responses(&db, &blocks[1]).unwrap();
         assert_eq!(responses.len(), 1, "Block 1 rejection should still exist");
 
         // Query block 3 - should exist (newest)
-        let responses = db.get_signer_rejection_responses(&blocks[3]).unwrap();
+        let responses = get_pending_rejection_responses(&db, &blocks[3]).unwrap();
         assert_eq!(responses.len(), 1, "Block 3 rejection should exist");
 
         // Add 5th rejection from same signer - should evict block 1 now
@@ -4308,17 +4306,17 @@ pub mod tests {
         std::thread::sleep(std::time::Duration::from_secs(1));
 
         // Query block 1 - should now be evicted
-        let responses = db.get_signer_rejection_responses(&blocks[1]).unwrap();
+        let responses = get_pending_rejection_responses(&db, &blocks[1]).unwrap();
         assert_eq!(responses.len(), 0, "Block 1 rejection should be evicted");
 
         // Query block 2, 3, 4 - should still exist
-        let responses = db.get_signer_rejection_responses(&blocks[2]).unwrap();
+        let responses = get_pending_rejection_responses(&db, &blocks[2]).unwrap();
         assert_eq!(responses.len(), 1, "Block 2 rejection should exist");
 
-        let responses = db.get_signer_rejection_responses(&blocks[3]).unwrap();
+        let responses = get_pending_rejection_responses(&db, &blocks[3]).unwrap();
         assert_eq!(responses.len(), 1, "Block 3 rejection should exist");
 
-        let responses = db.get_signer_rejection_responses(&blocks[4]).unwrap();
+        let responses = get_pending_rejection_responses(&db, &blocks[4]).unwrap();
         assert_eq!(responses.len(), 1, "Block 4 rejection should exist");
     }
 
@@ -4356,7 +4354,7 @@ pub mod tests {
         }
 
         // Signer1 should have evicted block 0 (oldest of 4)
-        let responses = db.get_signer_pre_commit_responses(&blocks[0]).unwrap();
+        let responses = get_pending_pre_commit_responses(&db, &blocks[0]).unwrap();
         assert!(
             !responses.contains(&signer1),
             "Signer1 should be evicted from block 0 (oldest per signer)"
@@ -4367,12 +4365,12 @@ pub mod tests {
         );
 
         // Block 1 should have both signers
-        let responses = db.get_signer_pre_commit_responses(&blocks[1]).unwrap();
+        let responses = get_pending_pre_commit_responses(&db, &blocks[1]).unwrap();
         assert!(responses.contains(&signer1), "Signer1 should be in block 1");
         assert!(responses.contains(&signer2), "Signer2 should be in block 1");
 
         // Signer2 should still have 2 entries (no eviction)
-        let responses = db.get_signer_pre_commit_responses(&blocks[2]).unwrap();
+        let responses = get_pending_pre_commit_responses(&db, &blocks[2]).unwrap();
         assert!(responses.contains(&signer1), "Signer1 should be in block 2");
         assert!(
             !responses.contains(&signer2),
