@@ -666,7 +666,7 @@ impl Signer {
                     return;
                 };
                 self.recently_processed.add_block(block_id.clone());
-                debug!(
+                info!(
                     "{self}: Received a new block event.";
                     "block_id" => %block_id,
                     "signer_signature_hash" => %signer_sighash,
@@ -1867,6 +1867,7 @@ impl Signer {
                 return;
             }
         };
+        let signature_weight = self.signer_weights.get(signer_address).unwrap_or(&0);
         let total_reject_weight =
             self.compute_signature_signing_weight(rejection_addrs.iter().map(|(addr, _)| addr));
         let total_weight = self.compute_signature_total_weight();
@@ -1879,6 +1880,7 @@ impl Signer {
             // Not enough rejection signatures to make a decision
             info!("{self}: Have not yet received enough block rejections to reach a consensus decision on this block";
                 "signer_signature_hash" => %block_hash,
+                "signature_weight" => signature_weight,
                 "consensus_hash" => %block_info.block.header.consensus_hash,
                 "block_height" => block_info.block.header.chain_length,
                 "total_weight_rejected" => total_reject_weight,
@@ -1889,6 +1891,7 @@ impl Signer {
         }
         info!("{self}: have reached the block rejection threshold";
             "signer_signature_hash" => %block_hash,
+            "signature_weight" => signature_weight,
             "consensus_hash" => %block_info.block.header.consensus_hash,
             "block_height" => block_info.block.header.chain_length,
             "total_weight_rejected" => total_reject_weight,
@@ -2032,7 +2035,8 @@ impl Signer {
             })
             .collect();
 
-        let signature_weight = self.compute_signature_signing_weight(addrs_to_sigs.keys());
+        let signature_weight = self.signer_weights.get(signer_address).unwrap_or(&0);
+        let total_signature_weight = self.compute_signature_signing_weight(addrs_to_sigs.keys());
         let total_weight = self.compute_signature_total_weight();
 
         let min_weight = NakamotoBlockHeader::compute_voting_weight_threshold(total_weight)
@@ -2040,24 +2044,26 @@ impl Signer {
                 panic!("{self}: Failed to compute threshold weight for {total_weight}")
             });
 
-        if min_weight > signature_weight {
-            info!("{self}: not yet received enough block acceptances to reach a consensus decision on this block";
+        if min_weight > total_signature_weight {
+            info!("{self}: Received block acceptance";
                 "signer_signature_hash" => %block_hash,
+                "signature_weight" => signature_weight,
                 "consensus_hash" => %block_info.block.header.consensus_hash,
                 "block_height" => block_info.block.header.chain_length,
-                "total_weight_approved" => signature_weight,
+                "total_weight_approved" => total_signature_weight,
                 "total_weight" => total_weight,
-                "percent_approved" => (signature_weight as f64 / total_weight as f64 * 100.0),
+                "percent_approved" => (total_signature_weight as f64 / total_weight as f64 * 100.0),
             );
             return;
         }
         info!("{self}: have reached the block acceptance threshold";
             "signer_signature_hash" => %block_hash,
+            "signature_weight" => signature_weight,
             "consensus_hash" => %block_info.block.header.consensus_hash,
             "block_height" => block_info.block.header.chain_length,
-            "total_weight_approved" => signature_weight,
+            "total_weight_approved" => total_signature_weight,
             "total_weight" => total_weight,
-            "percent_approved" => (signature_weight as f64 / total_weight as f64 * 100.0),
+            "percent_approved" => (total_signature_weight as f64 / total_weight as f64 * 100.0),
         );
 
         // have enough signatures to broadcast!

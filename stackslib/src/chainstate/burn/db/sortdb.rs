@@ -5503,7 +5503,8 @@ impl SortitionHandleTx<'_> {
                     op.block_height, &op.txid, op.block_height, op.vtxindex;
                     "apparent_sender" => %op.apparent_sender,
                     "stacks_block_hash" => %op.block_header_hash,
-                    "parent_burn_block" => %op.parent_block_ptr
+                    "parent_burn_block" => %op.parent_block_ptr,
+                    "burn_fee" => %op.burn_fee,
                 );
                 self.insert_block_commit(op, sort_id)
             }
