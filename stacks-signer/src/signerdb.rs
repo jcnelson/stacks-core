@@ -271,17 +271,15 @@ impl BlockInfo {
         Some(tenure_change.cause)
     }
 
-    /// Mark this block as valid and pre-committed. Records an approved time timestamp in the block info if it wasn't already set.
+    /// Mark this block as valid, record the approved time timestamp if not already set and attempt to mark it as pre-committed.
     pub fn mark_pre_committed(&mut self) -> Result<(), String> {
-        self.move_to(BlockState::PreCommitted)?;
         self.valid = Some(true);
         self.approved_time.get_or_insert(get_epoch_time_secs());
-        Ok(())
+        self.move_to(BlockState::PreCommitted)
     }
 
-    /// Mark this block as locally accepted and record the appropriate timestamps if they are not already set.
+    /// Mark this block as valid and the appropriate timestamps if they aren't already set, and attempt to mark it as locally accepted.
     pub fn mark_locally_accepted(&mut self, group_signed: bool) -> Result<(), String> {
-        self.move_to(BlockState::LocallyAccepted)?;
         if group_signed {
             self.signed_group.get_or_insert(get_epoch_time_secs());
         } else {
@@ -289,28 +287,24 @@ impl BlockInfo {
             self.approved_time.get_or_insert(get_epoch_time_secs());
             self.signed_self.get_or_insert(get_epoch_time_secs());
         }
-        Ok(())
+        self.move_to(BlockState::LocallyAccepted)
     }
 
-    /// Mark this block signed over, and records a group timestamp in the block info if it wasn't
-    ///  already set.
+    /// Mark this block's signed group time if not already set and attempt to mark it as globally accepted.
     pub fn mark_globally_accepted(&mut self) -> Result<(), String> {
-        self.move_to(BlockState::GloballyAccepted)?;
         self.signed_group.get_or_insert(get_epoch_time_secs());
-        Ok(())
+        self.move_to(BlockState::GloballyAccepted)
     }
 
-    /// Mark the block as locally rejected and invalid
+    /// Mark this block as invalid and attempt to mark it as locally rejected
     pub fn mark_locally_rejected(&mut self) -> Result<(), String> {
-        self.move_to(BlockState::LocallyRejected)?;
         self.valid = Some(false);
-        Ok(())
+        self.move_to(BlockState::LocallyRejected)
     }
 
-    /// Mark the block as globally rejected
+    /// Attempt to mark the block as globally rejected
     pub fn mark_globally_rejected(&mut self) -> Result<(), String> {
-        self.move_to(BlockState::GloballyRejected)?;
-        Ok(())
+        self.move_to(BlockState::GloballyRejected)
     }
 
     /// Return the block's signer signature hash

@@ -1123,10 +1123,6 @@ impl Signer {
             if !block_info.has_reached_consensus() {
                 warn!("{self}: Failed to mark block as locally accepted: {e:?}",);
             }
-            block_info
-                .approved_time
-                .get_or_insert(get_epoch_time_secs());
-            block_info.signed_self.get_or_insert(get_epoch_time_secs());
         }
         self.signer_db
             .insert_block(&block_info)
@@ -1296,46 +1292,59 @@ impl Signer {
             self.signer_db
                 .insert_block(&block_info)
                 .unwrap_or_else(|e| self.handle_insert_block_error(e));
-            for stacker_address in pending_responses.pre_commits {
-                debug!("{self}: Processing pending pre-commit.";
-                    "stacker_address" => %stacker_address,
-                    "signer_signature_hash" => %signer_signature_hash,
-                    "block_id" => %block_info.block.block_id(),
-                );
-                self.handle_block_pre_commit(
-                    stacks_client,
-                    &stacker_address,
-                    &signer_signature_hash,
-                );
-            }
-            for (stacker_address, reject_reason) in pending_responses.rejections {
-                debug!("{self}: Processing pending rejection.";
-                    "stacker_address" => %stacker_address,
-                    "signer_signature_hash" => %signer_signature_hash,
-                    "block_id" => %block_info.block.block_id(),
-                    "reject_reason" => ?reject_reason,
-                );
-                self.store_and_process_block_rejection(
-                    sortition_state,
-                    &mut block_info,
-                    &stacker_address,
-                    reject_reason,
-                );
-            }
-            let block_id = block_info.block.block_id();
-            for (stackers_address, signature) in pending_responses.signatures {
-                debug!("{self}: Processing pending signature.";
-                    "stacker_address" => %stackers_address,
-                    "signer_signature_hash" => %signer_signature_hash,
-                    "block_id" => %block_id,
-                );
-                self.store_and_process_block_signature(
-                    stacks_client,
-                    &mut block_info,
-                    &stackers_address,
-                    &signature,
-                );
-            }
+            self.process_pending_responses_for_block(
+                stacks_client,
+                sortition_state,
+                &mut block_info,
+                pending_responses,
+            );
+        }
+    }
+
+    /// Process pending responses for a block proposal that we may have received late.
+    fn process_pending_responses_for_block(
+        &mut self,
+        stacks_client: &StacksClient,
+        sortition_state: &mut Option<SortitionsView>,
+        block_info: &mut BlockInfo,
+        pending_responses: PendingBlockResponses,
+    ) {
+        let signer_signature_hash = block_info.block.header.signer_signature_hash();
+        for stacker_address in pending_responses.pre_commits {
+            debug!("{self}: Processing pending pre-commit.";
+                "stacker_address" => %stacker_address,
+                "signer_signature_hash" => %signer_signature_hash,
+                "block_id" => %block_info.block.block_id(),
+            );
+            self.handle_block_pre_commit(stacks_client, &stacker_address, &signer_signature_hash);
+        }
+        for (stacker_address, reject_reason) in pending_responses.rejections {
+            debug!("{self}: Processing pending rejection.";
+                "stacker_address" => %stacker_address,
+                "signer_signature_hash" => %signer_signature_hash,
+                "block_id" => %block_info.block.block_id(),
+                "reject_reason" => ?reject_reason,
+            );
+            self.store_and_process_block_rejection(
+                sortition_state,
+                block_info,
+                &stacker_address,
+                reject_reason,
+            );
+        }
+        let block_id = block_info.block.block_id();
+        for (stackers_address, signature) in pending_responses.signatures {
+            debug!("{self}: Processing pending signature.";
+                "stacker_address" => %stackers_address,
+                "signer_signature_hash" => %signer_signature_hash,
+                "block_id" => %block_id,
+            );
+            self.store_and_process_block_signature(
+                stacks_client,
+                block_info,
+                &stackers_address,
+                &signature,
+            );
         }
     }
 
@@ -1520,7 +1529,6 @@ impl Signer {
                 if !block_info.has_reached_consensus() {
                     warn!("{self}: Failed to mark block as locally rejected: {e:?}");
                 }
-                block_info.valid = Some(false);
             };
             self.signer_db
                 .insert_block(&block_info)
@@ -1529,14 +1537,14 @@ impl Signer {
             self.send_block_response(&block_info.block, block_rejection.into());
         } else {
             if let Err(e) = block_info.mark_pre_committed() {
-                if !block_info.has_reached_consensus() {
+                // The block may have reached enough signatures before we validated the block so should fail to mark pre-committed
+                // but still call to make sure the timestamps and validity are updated correctly.
+                if !block_info.has_reached_consensus()
+                    && block_info.state != BlockState::LocallyAccepted
+                {
                     warn!("{self}: Failed to mark block as approved: {e:?}",);
                     return;
                 }
-                block_info.valid = Some(true);
-                block_info
-                    .approved_time
-                    .get_or_insert(get_epoch_time_secs());
             }
 
             self.signer_db
@@ -1580,9 +1588,8 @@ impl Signer {
         }
         if let Err(e) = block_info.mark_locally_rejected() {
             if !block_info.has_reached_consensus() {
-                warn!("{self}: Failed to mark block as locally rejected: {e:?}",);
+                warn!("{self}: Failed to mark block as locally rejected: {e:?}");
             }
-            block_info.valid = Some(false);
         }
         let block_rejection = BlockRejection::from_validate_rejection(
             block_validate_reject.clone(),
@@ -1726,7 +1733,6 @@ impl Signer {
             if !block_info.has_reached_consensus() {
                 warn!("{self}: Failed to mark block as locally rejected: {e:?}");
             }
-            block_info.valid = Some(false);
         };
         self.send_block_response(&block_info.block, rejection.into());
 
