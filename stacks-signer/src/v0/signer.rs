@@ -1223,10 +1223,7 @@ impl Signer {
         };
         crate::monitoring::actions::increment_block_proposals_received();
         // Creating a new proposal will overwrite any prior proposal info on the block if it exists, e.g. validity, signed_timestamps, etc.
-        #[cfg(any(test, feature = "testing"))]
         let mut block_info = BlockInfo::from(block_proposal.clone());
-        #[cfg(not(any(test, feature = "testing")))]
-        let block_info = BlockInfo::from(block_proposal.clone());
 
         // Get sortition view if we don't have it
         if sortition_state.is_none() {
