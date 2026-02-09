@@ -1,5 +1,5 @@
 // Copyright (C) 2013-2020 Blockstack PBC, a public benefit corporation
-// Copyright (C) 2020 Stacks Open Internet Foundation
+// Copyright (C) 2020-2026 Stacks Open Internet Foundation
 //
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
@@ -855,7 +855,7 @@ WHERE approved_time IS NULL
 
 -- Replace the old query optimization index to use approved_time
 DROP INDEX IF EXISTS idx_blocks_query_opt;
-CREATE INDEX IF NOT EXISTS idx_blocks_query_opt
+CREATE INDEX IF NOT EXISTS idx_blocks_get_last_globally_accepted_block_approved_time
 ON blocks (
     consensus_hash,
     state,
