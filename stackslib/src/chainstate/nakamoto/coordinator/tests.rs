@@ -2037,7 +2037,6 @@ fn test_nakamoto_chainstate_getters() {
             SortitionDB::get_canonical_stacks_chain_tip_hash_and_height(sort_tx.sqlite()).unwrap();
         sort_tx
             .test_update_canonical_stacks_tip(
-                &cur_burn_tip.sortition_id,
                 &FIRST_BURNCHAIN_CONSENSUS_HASH,
                 &FIRST_STACKS_BLOCK_HASH,
                 0,
@@ -2067,12 +2066,7 @@ fn test_nakamoto_chainstate_getters() {
 
         // restore
         sort_tx
-            .test_update_canonical_stacks_tip(
-                &cur_burn_tip.sortition_id,
-                &cur_stacks_ch,
-                &cur_stacks_bhh,
-                cur_stacks_height,
-            )
+            .test_update_canonical_stacks_tip(&cur_stacks_ch, &cur_stacks_bhh, cur_stacks_height)
             .unwrap();
         NakamotoChainState::insert_nakamoto_tenure(
             chainstate.db(),
@@ -2236,7 +2230,6 @@ fn test_nakamoto_chainstate_getters() {
             SortitionDB::get_canonical_stacks_chain_tip_hash_and_height(sort_tx.sqlite()).unwrap();
         sort_tx
             .test_update_canonical_stacks_tip(
-                &cur_burn_tip.sortition_id,
                 &blocks[9].header.consensus_hash,
                 &blocks[9].header.block_hash(),
                 blocks[9].header.chain_length,
@@ -2278,12 +2271,7 @@ fn test_nakamoto_chainstate_getters() {
 
         // restore
         sort_tx
-            .test_update_canonical_stacks_tip(
-                &cur_burn_tip.sortition_id,
-                &cur_stacks_ch,
-                &cur_stacks_bhh,
-                cur_stacks_height,
-            )
+            .test_update_canonical_stacks_tip(&cur_stacks_ch, &cur_stacks_bhh, cur_stacks_height)
             .unwrap();
         NakamotoChainState::insert_nakamoto_tenure(
             chainstate.db(),
