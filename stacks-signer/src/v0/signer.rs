@@ -661,6 +661,17 @@ impl Signer {
                 signer_sighash,
                 transactions,
             } => {
+                #[cfg(any(test, feature = "testing"))]
+                if self.test_ignore_all_block_announcements(
+                    *block_height,
+                    block_id,
+                    consensus_hash,
+                    signer_sighash,
+                    transactions,
+                ) {
+                    return;
+                }
+
                 let Some(signer_sighash) = signer_sighash else {
                     debug!("{self}: received a new block event for a pre-nakamoto block, no processing necessary");
                     return;

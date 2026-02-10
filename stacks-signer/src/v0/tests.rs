@@ -17,7 +17,8 @@ use std::collections::HashMap;
 use std::sync::LazyLock;
 
 use blockstack_lib::chainstate::nakamoto::NakamotoBlock;
-use clarity::types::chainstate::StacksAddress;
+use blockstack_lib::chainstate::stacks::StacksTransaction;
+use clarity::types::chainstate::{ConsensusHash, StacksAddress, StacksBlockId};
 use clarity::util::hash::Sha512Trunc256Sum;
 use libsigner::v0::messages::{BlockRejection, BlockResponse, RejectReason};
 use libsigner::BlockProposal;
@@ -68,6 +69,10 @@ pub static TEST_SIGNERS_IGNORE_BLOCK_RESPONSES: LazyLock<TestFlag<Vec<StacksPubl
 
 /// A global variable that can be used to ignore all block pre-commits from other signers if the signer's public key is in the provided list
 pub static TEST_SIGNERS_IGNORE_PRE_COMMITS: LazyLock<TestFlag<Vec<StacksPublicKey>>> =
+    LazyLock::new(TestFlag::default);
+
+/// A global variable that can be used to ignore all block announcements if the signer's public key is in the provided list
+pub static TEST_SIGNERS_IGNORE_BLOCK_ANNOUNCEMENT: LazyLock<TestFlag<Vec<StacksPublicKey>>> =
     LazyLock::new(TestFlag::default);
 
 impl Signer {
@@ -246,6 +251,31 @@ impl Signer {
             warn!("{self}: Ignoring block pre-commit due to testing directive";
                 "pre_commit" => %pre_commit,
                 "signer_address" => %signer_address,
+            );
+            return true;
+        }
+        false
+    }
+
+    /// Ignore block announcements if the TEST_SIGNERS_IGNORE_BLOCK_ANNOUNCEMENT flag is set for the signer's public key
+    pub fn test_ignore_all_block_announcements(
+        &self,
+        block_height: u64,
+        block_id: &StacksBlockId,
+        consensus_hash: &ConsensusHash,
+        signer_sighash: &Option<Sha512Trunc256Sum>,
+        transactions: &[StacksTransaction],
+    ) -> bool {
+        let public_keys = TEST_SIGNERS_IGNORE_BLOCK_ANNOUNCEMENT.get();
+        if public_keys.contains(
+            &stacks_common::types::chainstate::StacksPublicKey::from_private(&self.private_key),
+        ) {
+            warn!("{self}: Ignoring block announcement due to testing directive";
+                "block_id" => %block_id,
+                "height" => block_height,
+                "consensus_hash" => %consensus_hash,
+                "signer_sighash" => ?signer_sighash,
+                "nmb_transactions" => transactions.len()
             );
             return true;
         }
