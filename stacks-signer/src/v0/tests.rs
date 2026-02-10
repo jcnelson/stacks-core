@@ -75,6 +75,12 @@ pub static TEST_SIGNERS_IGNORE_PRE_COMMITS: LazyLock<TestFlag<Vec<StacksPublicKe
 pub static TEST_SIGNERS_IGNORE_BLOCK_ANNOUNCEMENT: LazyLock<TestFlag<Vec<StacksPublicKey>>> =
     LazyLock::new(TestFlag::default);
 
+/// A global variable that can be used to insert a block proposal into the signer db without processing it if the signer's public key is in the provided list
+/// Used to simluate a case where a signer may have crashed after accepting a block proposal but before processing it (should not really happen under any other circumstance)
+pub static TEST_SIGNERS_INSERT_BLOCK_PROPOSAL_WITHOUT_PROCESSING: LazyLock<
+    TestFlag<Vec<StacksPublicKey>>,
+> = LazyLock::new(TestFlag::default);
+
 impl Signer {
     /// Skip the block broadcast if the TEST_SKIP_BLOCK_BROADCAST flag is set
     pub fn test_skip_block_broadcast(&self, block: &NakamotoBlock) -> bool {
@@ -114,6 +120,8 @@ impl Signer {
                 "height" => block_proposal.block.header.chain_length,
                 "consensus_hash" => %block_proposal.block.header.consensus_hash
             );
+
+            info!("{self}: HERE WE GO TEST");
             if let Err(e) = block_info.mark_locally_rejected() {
                 if !block_info.has_reached_consensus() {
                     warn!("{self}: Failed to mark block as locally rejected: {e:?}");
@@ -277,6 +285,31 @@ impl Signer {
                 "signer_sighash" => ?signer_sighash,
                 "nmb_transactions" => transactions.len()
             );
+            return true;
+        }
+        false
+    }
+
+    /// Accept the block proposal without processing it if the TEST_SIGNERS_INSERT_BLOCK_PROPOSAL_WITHOUT_PROCESSING flag is set for the signer's public key
+    pub fn test_insert_block_proposal_without_processing(
+        &mut self,
+        block_proposal: &BlockProposal,
+    ) -> bool {
+        let public_keys = TEST_SIGNERS_INSERT_BLOCK_PROPOSAL_WITHOUT_PROCESSING.get();
+        if public_keys.contains(
+            &stacks_common::types::chainstate::StacksPublicKey::from_private(&self.private_key),
+        ) {
+            warn!("{self}: Accepting block proposal without processing due to testing directive";
+                "block_id" => %block_proposal.block.header.block_id(),
+                "height" => block_proposal.block.header.chain_length,
+                "consensus_hash" => %block_proposal.block.header.consensus_hash,
+                "signer_sighash" => ?block_proposal.block.header.signer_signature_hash(),
+                "nmb_transactions" => block_proposal.block.txs.len(),
+            );
+            let block_info = BlockInfo::from(block_proposal.clone());
+            self.signer_db
+                .insert_block(&block_info)
+                .unwrap_or_else(|e| self.handle_insert_block_error(e));
             return true;
         }
         false

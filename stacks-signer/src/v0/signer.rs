@@ -575,6 +575,10 @@ impl Signer {
                             if self.test_ignore_all_block_proposals(block_proposal) {
                                 continue;
                             }
+                            #[cfg(any(test, feature = "testing"))]
+                            if self.test_insert_block_proposal_without_processing(block_proposal) {
+                                continue;
+                            }
                             self.handle_block_proposal(
                                 stacks_client,
                                 sortition_state,
@@ -1144,6 +1148,76 @@ impl Signer {
         self.send_block_response(&block_info.block, accepted.into());
     }
 
+    /// Determine if an already tracked block should be re-evaluated based on a new block proposal for it.
+    /// Returns true if the block should be re-evaluated, false if it should be ignored.
+    fn should_reevaluate_block(
+        &mut self,
+        block_info: &BlockInfo,
+        block_proposal: &BlockProposal,
+    ) -> bool {
+        let signer_signature_hash = block_info.block.header.signer_signature_hash();
+        if block_info.globally_approved_and_responded() {
+            info!("{self}: received a block proposal for a globally accepted block to which we have already responded. Ignoring.";
+                "signer_signature_hash" => %signer_signature_hash,
+                "block_id" => %block_info.block.block_id(),
+                "block_height" => block_info.block.header.chain_length,
+                "burn_height" => block_proposal.burn_height,
+                "consensus_hash" => %block_info.block.header.consensus_hash,
+                "timestamp" => block_info.block.header.timestamp,
+                "signed_group" => block_info.signed_group,
+                "signed_self" => block_info.signed_self,
+                "valid" => ?block_info.valid
+            );
+            return false;
+        }
+        if !should_reevaluate_reject_reason(block_info) {
+            if let Some(block_response) = self.determine_response(block_info) {
+                self.send_block_response(&block_info.block, block_response);
+                return false;
+            } else {
+                let pending_block_validations = self
+                    .signer_db
+                    .get_all_pending_block_validations()
+                    .unwrap_or_else(|e| {
+                        warn!("{self}: Failed to load pending block validations: {e:?}");
+                        vec![]
+                    });
+                if pending_block_validations.iter().any(|validation| {
+                    validation.signer_signature_hash
+                        == block_info.block.header.signer_signature_hash()
+                }) {
+                    debug!(
+                        "{self}: received a block proposal for a block for which we is already pending validation. Do nothing.";
+                        "signer_signature_hash" => %block_info.block.header.signer_signature_hash(),
+                        "block_id" => %block_info.block.block_id()
+                    );
+                    return false;
+                } else {
+                    info!(
+                        "{self}: received a block proposal for this block before, but we do not have a pending validation for it.";
+                        "reject_reason" => ?block_info.reject_reason,
+                        "signer_signature_hash" => %signer_signature_hash,
+                        "block_id" => %block_info.block.block_id(),
+                        "block_height" => block_info.block.header.chain_length,
+                        "burn_height" => block_proposal.burn_height,
+                        "consensus_hash" => %block_info.block.header.consensus_hash
+                    );
+                }
+            }
+        } else {
+            info!(
+                "{self}: received a block proposal for this block before, but our rejection reason allows us to reconsider";
+                "reject_reason" => ?block_info.reject_reason,
+                "signer_signature_hash" => %signer_signature_hash,
+                "block_id" => %block_proposal.block.block_id(),
+                "block_height" => block_proposal.block.header.chain_length,
+                "burn_height" => block_proposal.burn_height,
+                "consensus_hash" => %block_proposal.block.header.consensus_hash
+            );
+        }
+        true
+    }
+
     /// Handle block proposal messages submitted to signers stackerdb
     fn handle_block_proposal(
         &mut self,
@@ -1182,46 +1256,22 @@ impl Signer {
         // TODO: should add a check to ignore an old burn block height if we know its outdated. Would require us to store the burn block height we last saw on the side.
         //  the signer needs to be able to determine whether or not the block they're about to sign would conflict with an already-signed Stacks block
         let signer_signature_hash = block_proposal.block.header.signer_signature_hash();
-        let pending_responses = if let Some(block_info) =
-            self.block_lookup_by_reward_cycle(&signer_signature_hash)
-        {
-            if block_info.globally_approved_and_responded() {
-                info!("{self}: received a block proposal for a globally accepted block to which we have already responded. Ignoring.";
+        let pending_responses =
+            if let Some(block_info) = self.block_lookup_by_reward_cycle(&signer_signature_hash) {
+                if !self.should_reevaluate_block(&block_info, block_proposal) {
+                    return;
+                }
+                PendingBlockResponses::empty()
+            } else {
+                info!(
+                    "{self}: received a block proposal for a new block.";
                     "signer_signature_hash" => %signer_signature_hash,
                     "block_id" => %block_proposal.block.block_id(),
                     "block_height" => block_proposal.block.header.chain_length,
                     "burn_height" => block_proposal.burn_height,
                     "consensus_hash" => %block_proposal.block.header.consensus_hash,
-                    "timestamp" => block_proposal.block.header.timestamp,
-                    "signed_group" => block_info.signed_group,
-                    "signed_self" => block_info.signed_self,
-                    "valid" => ?block_info.valid
                 );
-                return;
-            }
-            if !should_reevaluate_block(&block_info) {
-                return self.handle_prior_proposal_eval(&block_info);
-            }
-            info!(
-                "{self}: received a block proposal for this block before, but our rejection reason allows us to reconsider";
-                "reject_reason" => ?block_info.reject_reason,
-                "signer_signature_hash" => %signer_signature_hash,
-                "block_id" => %block_proposal.block.block_id(),
-                "block_height" => block_proposal.block.header.chain_length,
-                "burn_height" => block_proposal.burn_height,
-                "consensus_hash" => %block_proposal.block.header.consensus_hash
-            );
-            PendingBlockResponses::empty()
-        } else {
-            info!(
-                "{self}: received a block proposal for a new block.";
-                "signer_signature_hash" => %signer_signature_hash,
-                "block_id" => %block_proposal.block.block_id(),
-                "block_height" => block_proposal.block.header.chain_length,
-                "burn_height" => block_proposal.burn_height,
-                "consensus_hash" => %block_proposal.block.header.consensus_hash,
-            );
-            self.signer_db
+                self.signer_db
                 .drain_pending_block_responses(&signer_signature_hash)
                 .unwrap_or_else(|e| {
                     warn!(
@@ -1231,7 +1281,7 @@ impl Signer {
                     );
                     PendingBlockResponses::empty()
                 })
-        };
+            };
         crate::monitoring::actions::increment_block_proposals_received();
         // Creating a new proposal will overwrite any prior proposal info on the block if it exists, e.g. validity, signed_timestamps, etc.
         let mut block_info = BlockInfo::from(block_proposal.clone());
@@ -1354,20 +1404,6 @@ impl Signer {
                 &signature,
             );
         }
-    }
-
-    fn handle_prior_proposal_eval(&mut self, block_info: &BlockInfo) {
-        let Some(block_response) = self.determine_response(block_info) else {
-            // We are still waiting for a response for this block. Do nothing.
-            debug!(
-                "{self}: Received a block proposal for a block we are already validating.";
-                "signer_signature_hash" => %block_info.signer_signature_hash(),
-                "block_id" => %block_info.block.block_id()
-            );
-            return;
-        };
-
-        self.send_block_response(&block_info.block, block_response);
     }
 
     /// Handle block response messages from a signer
@@ -2258,7 +2294,7 @@ impl Signer {
 }
 
 /// Determine if a block should be re-evaluated based on its rejection reason˝
-fn should_reevaluate_block(block_info: &BlockInfo) -> bool {
+fn should_reevaluate_reject_reason(block_info: &BlockInfo) -> bool {
     if let Some(reject_reason) = &block_info.reject_reason {
         match reject_reason {
             RejectReason::ValidationFailed(ValidateRejectCode::UnknownParent)
