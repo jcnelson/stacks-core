@@ -1088,16 +1088,17 @@ impl Signer {
 
         if block_info.signed_self.is_some() {
             debug!(
-                "{self}: Received pre-commit for a block that we have already signed. Ignoring...",
+                "{self}: Received pre-commit for a block that we have already signed. Doing nothing...",
             );
             return;
         }
 
         if !block_info.valid.unwrap_or(false) {
-            // We already marked this block as invalid. We should not do anything further as we do not change our votes on rejected blocks
-            // unless we receive a new block proposal for it and the reject reason allows us to reconsider.
+            // We received a pre-commit for a block that we have not validated or we have already marked this block as invalid.
+            // We should not do anything further as we do not know what our response should be and we do not change our votes on rejected
+            // blocks unless we receive a new block proposal for it and the reject reason allows us to reconsider.
             debug!(
-                "{self}: Received a pre-commit for a block that we have not determined to be valid: {:?}. Ignoring...", block_info.valid
+                "{self}: Received a pre-commit for a block that we have not determined to be valid: {:?}. Doing nothing...", block_info.valid
             );
             return;
         }
@@ -1121,15 +1122,6 @@ impl Signer {
         if min_weight > commit_weight {
             debug!(
                 "{self}: Not enough pre-committed to block {block_hash} (have {commit_weight}, need at least {min_weight}/{total_weight})"
-            );
-            return;
-        }
-
-        if !block_info.valid.unwrap_or(false) {
-            // We already marked this block as invalid. We should not do anything further as we do not change our votes on rejected blocks
-            // unless we receive a new block proposal for it and the reject reason allows us to reconsider
-            debug!(
-                "{self}: Enough pre-committed to block {block_hash}, but we do not view the block as valid. Doing nothing..."
             );
             return;
         }
@@ -1557,8 +1549,9 @@ impl Signer {
             .unwrap_or_else(|e| self.handle_insert_block_error(e));
 
         if block_info.valid.is_some() {
-            // We should only have valid set if we have already processed a validation response for this block OR we locally marked it as rejected.
-            // and responded to it. If we received a new proposal for it, we would have reset valid to None.
+            // We should only have valid set if we have already processed a validation response for this block OR we locally marked it as rejected
+            // and responded to it. If we received a new proposal for it that we wished to consider, we would have reset valid to None.
+            // This is only really possible when a signer is sharing a node or we have timed out a pending validation and it suddenly arrives.
             warn!(
                 "{self}: Already processed a block validate response for block {}. Ignoring validation response.", block_info.block.header.signer_signature_hash(); "valid" => ?block_info.valid,
             );
@@ -2025,6 +2018,13 @@ impl Signer {
             }
             return;
         };
+
+        info!("{self}: Received block acceptance";
+            "signer_pubkey" => public_key.to_hex(),
+            "signer_signature_hash" => %block_hash,
+            "consensus_hash" => %block_info.block.header.consensus_hash,
+            "block_height" => block_info.block.header.chain_length
+        );
         self.store_and_process_block_signature(
             stacks_client,
             &mut block_info,
@@ -2092,7 +2092,7 @@ impl Signer {
             });
 
         if min_weight > total_signature_weight {
-            info!("{self}: Received block acceptance";
+            info!("{self}: Received block acceptance, but have not yet reached the acceptance threshold.";
                 "signer_signature_hash" => %block_hash,
                 "signature_weight" => signature_weight,
                 "consensus_hash" => %block_info.block.header.consensus_hash,
