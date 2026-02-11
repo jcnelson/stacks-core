@@ -1527,8 +1527,14 @@ impl BlockMinerThread {
         }
 
         if self.last_block_mined.is_none() && parent_block_info.parent_tenure.is_none() {
-            warn!("Miner should be starting a new tenure, but failed to load parent tenure info");
-            return Err(NakamotoNodeError::ParentNotFound);
+            if self.config.node.mock_mining {
+                info!("Mock miner will follow canonical tip within an ongoing tenure; no parent tenure info loaded yet");
+            } else {
+                warn!(
+                    "Miner should be starting a new tenure, but failed to load parent tenure info"
+                );
+                return Err(NakamotoNodeError::ParentNotFound);
+            }
         };
 
         // create our coinbase if this is the first block we've mined this tenure

@@ -12,6 +12,14 @@ and this project adheres to the versioning scheme outlined in the [README.md](RE
 - Setup for epoch 3.4 and Clarity version 5. Epoch 3.4 is currently set to activate at Bitcoin height 3,400,000 (very far in the future) until an activation height is selected. Clarity will activate with epoch 3.4.
 - Implemented the updated behavior for `secp256r1-verify`, effective in Clarity 5, in which the `message-hash` is no longer hashed again. See SIP-035 for details.
 
+### Fixed
+
+- Improved the cost-tracking for `from-consensus-buff?`, effective in epoch 3.4, so that when an empty buffer is passed, users will see a `none` result, rather than a confusing runtime error.
+
+### Fixed
+
+- Resolved several cases where a mock-miner would stop mining
+
 ## [3.3.0.0.5]
 
 ### Added
