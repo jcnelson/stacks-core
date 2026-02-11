@@ -1933,7 +1933,7 @@ impl StacksBlockBuilder {
         let mainnet = chainstate.config().mainnet;
 
         // data won't be committed, so do a concurrent transaction
-        let (chainstate_tx, clarity_instance) = chainstate.chainstate_tx_begin()?;
+        let (chainstate_tx, clarity_instance) = chainstate.chainstate_tx_begin();
 
         Ok(MinerEpochInfo {
             chainstate_tx,
