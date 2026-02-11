@@ -730,9 +730,12 @@ static SORTITION_DB_SCHEMA_11: &[&str] = &[r#"
     -- if they happen to have the same burn view as the given sortition.
     CREATE TABLE stacks_chain_tips_by_burn_view (
         sortition_id TEXT PRIMARY KEY,
+        consensus_hash TEXT NOT NULL, 
         burn_view_consensus_hash TEXT NOT NULL,
         block_hash TEXT NOT NULL,
-        block_height INTEGER NOT NULL
+        block_height INTEGER NOT NULL,
+        FOREIGN KEY(burn_view_consensus_hash) REFERENCES snapshots(consensus_hash),
+        FOREIGN KEY(consensus_hash) REFERENCES snapshots(consensus_hash)
     );
     "#];
 
@@ -1844,17 +1847,21 @@ impl SortitionHandleTx<'_> {
     }
 
     /// Update the canonical Stacks tip.
+    /// As of schema 11, this means memoizing the given (consensus_hash, stacks_block_hash,
+    /// stacks_block_height) triple at the sortition pointed to by `burn_view_consensus_hash`.
     fn update_canonical_stacks_tip(
         &mut self,
+        consensus_hash: &ConsensusHash,
         burn_view_consensus_hash: &ConsensusHash,
         stacks_block_hash: &BlockHeaderHash,
         stacks_block_height: u64,
     ) -> Result<(), db_error> {
         let sortition = SortitionDB::get_block_snapshot_consensus(self, burn_view_consensus_hash)?
             .ok_or(db_error::NotFoundError)?;
-        let sql = "INSERT OR REPLACE INTO stacks_chain_tips_by_burn_view (sortition_id,burn_view_consensus_hash,block_hash,block_height) VALUES (?1,?2,?3,?4)";
+        let sql = "INSERT OR REPLACE INTO stacks_chain_tips_by_burn_view (sortition_id,consensus_hash,burn_view_consensus_hash,block_hash,block_height) VALUES (?1,?2,?3,?4,?5)";
         let args = params![
             &sortition.sortition_id,
+            consensus_hash,
             burn_view_consensus_hash,
             stacks_block_hash,
             u64_to_sql(stacks_block_height)?,
@@ -1918,8 +1925,7 @@ impl SortitionHandleTx<'_> {
                 } else if cur_height > stacks_block_height {
                     false
                 } else if &cur_ch == consensus_hash {
-                    // same sortition (i.e. nakamoto block)
-                    // no replacement
+                    // this block is in the same tenure and same height
                     false
                 } else {
                     // tips come from different sortitions
@@ -1949,6 +1955,7 @@ impl SortitionHandleTx<'_> {
             }
 
             self.update_canonical_stacks_tip(
+                consensus_hash,
                 burn_view_consensus_hash,
                 stacks_block_hash,
                 stacks_block_height,
@@ -1983,7 +1990,7 @@ impl SortitionHandleTx<'_> {
 
         // update arrival data across all Stacks forks
         let (best_ch, best_bhh, best_height) = self.find_new_block_arrivals(burn_tip)?;
-        self.update_canonical_stacks_tip(&best_ch, &best_bhh, best_height)?;
+        self.update_canonical_stacks_tip(&best_ch, &best_ch, &best_bhh, best_height)?;
         self.update_new_block_arrivals(burn_tip, best_ch, best_bhh, best_height)?;
 
         Ok(())
@@ -4632,15 +4639,28 @@ impl SortitionDB {
         conn: &Connection,
         tip: &BlockSnapshot,
     ) -> Result<Option<(ConsensusHash, BlockHeaderHash, u64)>, db_error> {
+        Self::get_canonical_nakamoto_tip_hash_and_height_and_burn_view(conn, tip)
+            .and_then(|tip_opt| Ok(tip_opt.map(|(ch, _burn_ch, bhh, height)| (ch, bhh, height))))
+    }
+
+    /// Given a starting sortition ID, go and find the canonical Nakamoto tip and its burn view
+    /// Returns Ok(Some(tenure_consensus_hash, burn_view_consensus_hash, block_hash, block_height)) on success
+    /// Returns Ok(None) if there are no Nakamoto blocks in this tip
+    /// Returns Err(..) on other DB error
+    /// DO NOT CALL during Stacks block processing (including during Clarity VM evaluation). This function returns the latest data known to the node, which may not have been at the time of original block assembly.
+    pub fn get_canonical_nakamoto_tip_hash_and_height_and_burn_view(
+        conn: &Connection,
+        tip: &BlockSnapshot,
+    ) -> Result<Option<(ConsensusHash, ConsensusHash, BlockHeaderHash, u64)>, db_error> {
         // Search stacks_chain_tips_by_burn_height, but give up after a (small) number of rows.
         // This "give up" condition should only be reached when `stacks_chain_tips_by_burn_height`
         // is empty -- i.e. on migration to schema 11.
         let mut cursor = tip.clone();
         for _ in 0..STACKS_TIPS_BY_BURN_VIEW_SEARCH_DEPTH {
-            let result_at_tip : Option<(ConsensusHash, BlockHeaderHash, u64)> = conn.query_row_and_then(
-                "SELECT burn_view_consensus_hash,block_hash,block_height FROM stacks_chain_tips_by_burn_view WHERE sortition_id = ? ORDER BY block_height DESC LIMIT 1",
+            let result_at_tip : Option<(ConsensusHash, ConsensusHash, BlockHeaderHash, u64)> = conn.query_row_and_then(
+                "SELECT consensus_hash,burn_view_consensus_hash, block_hash,block_height FROM stacks_chain_tips_by_burn_view WHERE sortition_id = ? ORDER BY block_height DESC LIMIT 1",
                 &[&cursor.sortition_id],
-                |row| Ok((row.get_unwrap(0), row.get_unwrap(1), (u64::try_from(row.get_unwrap::<_, i64>(2)).expect("FATAL: block height too high"))))
+                |row| Ok((row.get_unwrap(0), row.get_unwrap(1), row.get_unwrap(2), (u64::try_from(row.get_unwrap::<_, i64>(3)).expect("FATAL: block height too high"))))
             ).optional()?;
             if let Some(stacks_tip) = result_at_tip {
                 return Ok(Some(stacks_tip));
@@ -4661,8 +4681,8 @@ impl SortitionDB {
                 &[&cursor.sortition_id],
                 |row| Ok((row.get_unwrap(0), row.get_unwrap(1), (u64::try_from(row.get_unwrap::<_, i64>(2)).expect("FATAL: block height too high"))))
             ).optional()?;
-            if let Some(stacks_tip) = result_at_tip {
-                return Ok(Some(stacks_tip));
+            if let Some((ch, bhh, height)) = result_at_tip {
+                return Ok(Some((ch.clone(), ch, bhh, height)));
             }
             let Some(next_cursor) =
                 SortitionDB::get_block_snapshot(conn, &cursor.parent_sortition_id)?
@@ -5404,31 +5424,44 @@ impl SortitionHandleTx<'_> {
                 )
             });
 
+        let burn_view_consensus_hash;
         if cur_epoch.epoch_id >= StacksEpochId::Epoch30 {
             // nakamoto behavior
             let (
                 canonical_stacks_tip_consensus_hash,
+                canonical_stacks_tip_burn_view_consensus_hash,
                 canonical_stacks_tip_block_hash,
                 canonical_stacks_tip_height,
-            ) = SortitionDB::get_canonical_nakamoto_tip_hash_and_height(self, &parent_snapshot)?
-                .unwrap_or((ConsensusHash([0x00; 20]), BlockHeaderHash([0x00; 32]), 0));
+            ) = SortitionDB::get_canonical_nakamoto_tip_hash_and_height_and_burn_view(
+                self,
+                &parent_snapshot,
+            )?
+            .unwrap_or((
+                ConsensusHash([0x00; 20]),
+                ConsensusHash([0x00; 20]),
+                BlockHeaderHash([0x00; 32]),
+                0,
+            ));
             debug!(
                 "Setting stacks_chain_tips values";
                 "sortition_id" => %sn.sortition_id,
                 "parent_sortition_id" => %parent_snapshot.sortition_id,
                 "stacks_tip_height" => canonical_stacks_tip_height,
                 "stacks_tip_hash" => %canonical_stacks_tip_block_hash,
-                "stacks_tip_consensus" => %canonical_stacks_tip_consensus_hash
+                "stacks_tip_consensus" => %canonical_stacks_tip_consensus_hash,
+                "stacks_tip_burn_view_consensus" => %canonical_stacks_tip_burn_view_consensus_hash,
             );
             sn.canonical_stacks_tip_height = canonical_stacks_tip_height;
             sn.canonical_stacks_tip_hash = canonical_stacks_tip_block_hash;
             sn.canonical_stacks_tip_consensus_hash = canonical_stacks_tip_consensus_hash;
+            burn_view_consensus_hash = canonical_stacks_tip_burn_view_consensus_hash;
         } else {
             // epoch 2.x behavior
             // preserve memoized stacks chain tip from this burn chain fork
             sn.canonical_stacks_tip_height = parent_sn.canonical_stacks_tip_height;
             sn.canonical_stacks_tip_hash = parent_sn.canonical_stacks_tip_hash;
             sn.canonical_stacks_tip_consensus_hash = parent_sn.canonical_stacks_tip_consensus_hash;
+            burn_view_consensus_hash = sn.canonical_stacks_tip_consensus_hash.clone();
         }
 
         if self.context.dryrun {
@@ -5448,6 +5481,7 @@ impl SortitionHandleTx<'_> {
 
         self.update_canonical_stacks_tip(
             &sn.canonical_stacks_tip_consensus_hash,
+            &burn_view_consensus_hash,
             &sn.canonical_stacks_tip_hash,
             sn.canonical_stacks_tip_height,
         )?;
@@ -6733,10 +6767,16 @@ pub mod tests {
         pub fn test_update_canonical_stacks_tip(
             &mut self,
             consensus_hash: &ConsensusHash,
+            burn_view_consensus_hash: &ConsensusHash,
             stacks_block_hash: &BlockHeaderHash,
             stacks_block_height: u64,
         ) -> Result<(), db_error> {
-            self.update_canonical_stacks_tip(consensus_hash, stacks_block_hash, stacks_block_height)
+            self.update_canonical_stacks_tip(
+                consensus_hash,
+                burn_view_consensus_hash,
+                stacks_block_hash,
+                stacks_block_height,
+            )
         }
     }
 
@@ -7007,7 +7047,7 @@ pub mod tests {
         pub fn get_all_stacks_chain_tips(
             &self,
         ) -> Result<Vec<(SortitionId, ConsensusHash, BlockHeaderHash, u64)>, db_error> {
-            let sql = "SELECT * FROM stacks_chain_tips UNION SELECT sortition_id,burn_view_consensus_hash AS consensus_hash,block_hash,block_height FROM stacks_chain_tips_by_burn_view ORDER BY block_height ASC";
+            let sql = "SELECT * FROM stacks_chain_tips UNION SELECT sortition_id,consensus_hash,block_hash,block_height FROM stacks_chain_tips_by_burn_view ORDER BY block_height ASC";
             let mut stmt = self.conn().prepare(sql)?;
             let mut qry = stmt.query(NO_PARAMS)?;
             let mut ret = vec![];
@@ -11216,7 +11256,7 @@ pub mod tests {
         sortition_id: &SortitionId,
     ) -> Option<(ConsensusHash, BlockHeaderHash, u64)> {
         let stacks_tip : Option<(ConsensusHash, BlockHeaderHash, u64)> = db.conn().query_row_and_then(
-            "SELECT burn_view_consensus_hash,block_hash,block_height FROM stacks_chain_tips_by_burn_view WHERE sortition_id = ?1 ORDER BY block_height DESC LIMIT 1",
+            "SELECT consensus_hash,block_hash,block_height FROM stacks_chain_tips_by_burn_view WHERE sortition_id = ?1 ORDER BY block_height DESC LIMIT 1",
             rusqlite::params![sortition_id],
             |row| Ok((row.get_unwrap(0), row.get_unwrap(1), (u64::try_from(row.get_unwrap::<_, i64>(2)).expect("FATAL: block height too high"))))
         ).optional().unwrap();
