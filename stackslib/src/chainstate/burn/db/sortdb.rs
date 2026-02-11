@@ -11240,11 +11240,15 @@ pub mod tests {
             }
 
             // chain tip is memoized to the current burn chain tip
-            let (block_consensus_hash, block_bhh, block_height) =
-                SortitionDB::get_canonical_nakamoto_tip_hash_and_height(db.conn(), &tip)
-                    .unwrap()
-                    .unwrap();
-            assert_eq!(block_consensus_hash, last_snapshot.consensus_hash);
+            let (block_consensus_hash, burn_view_consensus_hash, block_bhh, block_height) =
+                SortitionDB::get_canonical_nakamoto_tip_hash_and_height_and_burn_view(
+                    db.conn(),
+                    &tip,
+                )
+                .unwrap()
+                .unwrap();
+            assert_eq!(block_consensus_hash, ConsensusHash([0x04; 20]));
+            assert_eq!(burn_view_consensus_hash, last_snapshot.consensus_hash);
             assert_eq!(block_bhh, BlockHeaderHash([0x04; 32]));
             assert_eq!(block_height, 4);
         }
