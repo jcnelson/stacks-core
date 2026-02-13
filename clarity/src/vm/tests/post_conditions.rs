@@ -1663,10 +1663,12 @@ fn restrict_assets_too_many_allowances() {
             .collect::<Vec<_>>()
             .join(" ")
     );
-    let max_allowances_err: ClarityEvalError = VmExecutionError::RuntimeCheck(
-        RuntimeCheckErrorKind::TooManyAllowances(MAX_ALLOWANCES, MAX_ALLOWANCES + 1),
-    )
-    .into();
+    let max_allowances_err: ClarityEvalError =
+        VmExecutionError::RuntimeCheck(RuntimeCheckErrorKind::ExpectsAcceptable(format!(
+            "Too many allowances: got {}, allowed {MAX_ALLOWANCES}",
+            MAX_ALLOWANCES + 1
+        )))
+        .into();
     let err = execute(&snippet).expect_err("execution passed unexpectedly");
     assert_eq!(err, max_allowances_err);
 }
@@ -1680,7 +1682,7 @@ fn expected_allowance_expr_error() {
     let snippet = "(restrict-assets? tx-sender ((bad-fn u1)) true)";
 
     let expected_error: ClarityEvalError = VmExecutionError::RuntimeCheck(
-        RuntimeCheckErrorKind::ExpectedAllowanceExpr("bad-fn".to_string()),
+        RuntimeCheckErrorKind::ExpectsAcceptable("Expected allowance expr: bad-fn".to_string()),
     )
     .into();
 
@@ -1699,7 +1701,7 @@ fn expected_allowance_expr_error_unhandled_native() {
     let snippet = "(restrict-assets? tx-sender ((tx-sender u1)) true)";
 
     let expected_error: ClarityEvalError = VmExecutionError::RuntimeCheck(
-        RuntimeCheckErrorKind::ExpectedAllowanceExpr("tx-sender".to_string()),
+        RuntimeCheckErrorKind::ExpectsAcceptable("Expected allowance expr: tx-sender".to_string()),
     )
     .into();
 
@@ -1714,8 +1716,10 @@ fn expected_allowance_expr_error_unhandled_native() {
 fn allowance_expr_not_allowed() {
     let snippet = "(with-stx u1)";
 
-    let expected: ClarityEvalError =
-        VmExecutionError::RuntimeCheck(RuntimeCheckErrorKind::AllowanceExprNotAllowed).into();
+    let expected: ClarityEvalError = VmExecutionError::RuntimeCheck(
+        RuntimeCheckErrorKind::ExpectsAcceptable("Allowance expr not allowed".to_string()),
+    )
+    .into();
 
     let err = execute(snippet).expect_err("execution unexpectedly succeeded");
 
@@ -1733,10 +1737,11 @@ fn restrict_assets_expected_list_of_allowances() {
             (ok u1)
         )
     "#;
-    let expected_error: ClarityEvalError = VmExecutionError::RuntimeCheck(
-        RuntimeCheckErrorKind::ExpectedListOfAllowances("restrict-assets?".into(), 2),
-    )
-    .into();
+    let expected_error: ClarityEvalError =
+        VmExecutionError::RuntimeCheck(RuntimeCheckErrorKind::ExpectsAcceptable(
+            "Expected list of allowances: for restrict-assets? as argument 2".to_string(),
+        ))
+        .into();
 
     let err = execute(snippet).expect_err("execution passed unexpectedly");
     assert_eq!(err, expected_error);
@@ -1755,10 +1760,11 @@ fn as_contract_expected_list_of_allowances() {
     "#;
 
     // The argument is `u42` (not a list), so we expect this error
-    let expected_error: ClarityEvalError = VmExecutionError::RuntimeCheck(
-        RuntimeCheckErrorKind::ExpectedListOfAllowances("as-contract?".to_string(), 1),
-    )
-    .into();
+    let expected_error: ClarityEvalError =
+        VmExecutionError::RuntimeCheck(RuntimeCheckErrorKind::ExpectsAcceptable(
+            "Expected list of allowances: for as-contract? as argument 1".to_string(),
+        ))
+        .into();
 
     let err = execute(snippet).expect_err("execution passed unexpectedly");
     assert_eq!(err, expected_error);
