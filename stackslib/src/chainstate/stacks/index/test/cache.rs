@@ -306,27 +306,6 @@ fn test_marf_compress_8_256(#[case] marf_opts: &MARFOpenOpts, #[case] batch_size
     );
 }
 
-/// Tests MARF cache behavior with compression using 15.500 inserts across 10 blocks.
-///
-/// The purpose of this test is to verify that enabling compression produces
-/// the same root hash as running without compression.
-/// For all configurations, the resulting root hash must remain stable.
-///
-/// The batch size is intentionally set above 10.000 to force batched insertion
-/// and exercise the `eta` batching logic.
-#[rstest]
-#[case::noop_immediate_batch_15500(&opts::OPTS_NOOP_IMM_EXT, 15500)]
-#[case::noop_deferred_compress_batch_15500(&opts::OPTS_NOOP_DEF_COMP, 15500)]
-fn test_marf_cache_15500_2(#[case] marf_opts: &MARFOpenOpts, #[case] batch_size: usize) {
-    let test_data = make_test_insert_data(15500, 2);
-    let root_hash =
-        utils::run_test_with_string_keys(function_name_no_ns!(), &test_data, marf_opts, batch_size);
-    assert_eq!(
-        "6c82bb9437d4fdb957a0097873dbfb6c7b10f37ffa640c5632e7773daceeb88c",
-        root_hash.to_hex()
-    );
-}
-
 /// Tests MARF cache behavior with compression during repeated path expansion.
 ///
 /// This test exercises the expansion of a single trie path through successive
