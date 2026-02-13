@@ -50,7 +50,7 @@ use crate::vm::types::{
 use crate::vm::version::ClarityVersion;
 use crate::vm::{ast, eval, is_reserved, stx_transfer_consolidated};
 
-pub const MAX_CONTEXT_DEPTH: u16 = 256;
+pub const MAX_CONTEXT_DEPTH: u64 = 256;
 pub const MAX_EVENTS_BATCH: u64 = 50 * 1024 * 1024;
 
 // TODO:
@@ -261,13 +261,13 @@ pub struct LocalContext<'a> {
     pub parent: Option<&'a LocalContext<'a>>,
     pub variables: HashMap<ClarityName, Value>,
     pub callable_contracts: HashMap<ClarityName, CallableData>,
-    depth: u16,
+    depth: u64,
 }
 
 pub struct CallStack {
     stack: Vec<FunctionIdentifier>,
     set: HashSet<FunctionIdentifier>,
-    apply_depth: usize,
+    apply_depth: u64,
 }
 
 pub const TRANSIENT_CONTRACT_NAME: &str = "__transient";
@@ -1985,7 +1985,7 @@ impl<'a> LocalContext<'a> {
         }
     }
 
-    pub fn depth(&self) -> u16 {
+    pub fn depth(&self) -> u64 {
         self.depth
     }
 
@@ -2000,8 +2000,8 @@ impl<'a> LocalContext<'a> {
         if self.depth >= MAX_CONTEXT_DEPTH {
             // `MaxContextDepthReached` in this function is **unreachable** in normal Clarity execution because:
             // - Every function call in Clarity increments both the call stack depth and the local context depth.
-            // - The VM enforces `MAX_CALL_STACK_DEPTH` (currently 64) **before** `MAX_CONTEXT_DEPTH` (256).
-            // - This means no contract can create more than 64 nested function calls, preventing context depth from reaching 256.
+            // - The VM enforces the epoch-specific `MAX_CALL_STACK_DEPTH` **before** `MAX_CONTEXT_DEPTH` (256).
+            // - This means no contract can create more nested function calls than the epoch limit, preventing context depth from reaching 256.
             // - Nested expressions (`let`, `begin`, `if`, etc.) increment context depth, but the Clarity parser enforces
             //   `ExpressionStackDepthTooDeep` long before MAX_CONTEXT_DEPTH nested contexts can be written.
             // - As a result, `MaxContextDepthReached` can only occur in artificial Rust-level tests calling `LocalContext::extend()`,
@@ -2054,8 +2054,9 @@ impl CallStack {
         }
     }
 
-    pub fn depth(&self) -> usize {
-        self.stack.len() + self.apply_depth
+    pub fn depth(&self) -> u64 {
+        let stack_len = u64::try_from(self.stack.len()).unwrap_or(u64::MAX);
+        stack_len.saturating_add(self.apply_depth)
     }
 
     pub fn contains(&self, function: &FunctionIdentifier) -> bool {

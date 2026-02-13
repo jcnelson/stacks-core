@@ -15,6 +15,8 @@
 
 use std::{error, fmt};
 
+use stacks_common::types::StacksEpochId;
+
 use crate::diagnostic::{DiagnosableError, Diagnostic};
 use crate::errors::{ClarityTypeError, CostErrors};
 use crate::execution_cost::ExecutionCost;
@@ -193,7 +195,6 @@ pub enum CommonCheckErrorKind {
     TypeSignatureTooDeep,
     /// Expected a name (e.g., variable, function) but found an invalid or missing token.
     ExpectedName,
-
     // Unexpected interpreter behavior
     /// Unexpected condition or failure in the type-checker, indicating a bug or invalid state.
     ExpectsRejectable(String),
@@ -281,7 +282,7 @@ pub enum StaticCheckErrorKind {
     TypeSignatureTooDeep,
     /// Expected a name (e.g., variable, function) but found an invalid or missing token.
     ExpectedName,
-    /// Supertype (e.g., trait or union) exceeds the maximum allowed size or complexity.
+    /// Supertype (i.e. common denominator between two types) exceeds the maximum allowed size or complexity.
     SupertypeTooLarge,
 
     // Unexpected interpreter behavior
@@ -694,12 +695,13 @@ impl RuntimeCheckErrorKind {
 }
 
 impl StaticCheckErrorKind {
-    /// This check indicates that the transaction should be rejected.
-    pub fn rejectable(&self) -> bool {
-        matches!(
-            self,
-            StaticCheckErrorKind::SupertypeTooLarge | StaticCheckErrorKind::ExpectsRejectable(_)
-        )
+    /// This check indicates that the transaction should be rejected in the given epoch.
+    pub fn rejectable_in_epoch(&self, epoch: StacksEpochId) -> bool {
+        match self {
+            StaticCheckErrorKind::SupertypeTooLarge => epoch.rejects_supertype_too_large(),
+            StaticCheckErrorKind::ExpectsRejectable(_) => true,
+            _ => false,
+        }
     }
 }
 
