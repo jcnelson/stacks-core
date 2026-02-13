@@ -388,6 +388,8 @@ pub mod opts {
         LazyLock::new(|| MARFOpenOpts::new(TrieHashCalculationMode::Immediate, "everything", true));
     pub static OPTS_EVER_DEF_EXT: LazyLock<MARFOpenOpts> =
         LazyLock::new(|| MARFOpenOpts::new(TrieHashCalculationMode::Deferred, "everything", true));
+    pub static OPTS_EVER_DEF_EXT_COMP: LazyLock<MARFOpenOpts> =
+        LazyLock::new(|| OPTS_EVER_DEF_EXT.clone().with_compression(true));
 
     pub static ALL_OPTS_NOOP: LazyLock<Vec<MARFOpenOpts>> = LazyLock::new(|| {
         vec![

@@ -230,7 +230,7 @@ fn test_marf_cache_128_128(#[case] marf_opts: &MARFOpenOpts, #[case] batch_size:
     );
 }
 
-/// Tests MARF cache behavior (no compression) using 15.500 inserts across 10 blocks.
+/// Tests MARF cache behavior using 15.500 inserts across 10 blocks.
 ///
 /// The batch size is intentionally set above 10.000 to force batched insertion
 /// and exercise the `eta` batching logic.
@@ -238,6 +238,7 @@ fn test_marf_cache_128_128(#[case] marf_opts: &MARFOpenOpts, #[case] batch_size:
 #[rstest]
 #[case::noop_immediate_batch_15500(&opts::OPTS_NOOP_IMM_EXT, 15500)]
 #[case::node256_deferred_batch_15500(&opts::OPTS_N256_DEF_EXT, 15500)]
+#[case::ever_deferred_compress_batch_15500(&opts::OPTS_EVER_DEF_EXT_COMP, 15500)]
 fn test_marf_cache_15500_10(#[case] marf_opts: &MARFOpenOpts, #[case] batch_size: usize) {
     let test_data = make_test_insert_data(15500, 10);
     let root_hash =
@@ -301,6 +302,27 @@ fn test_marf_compress_8_256(#[case] marf_opts: &MARFOpenOpts, #[case] batch_size
         utils::run_test_with_string_keys(function_name_no_ns!(), &test_data, marf_opts, batch_size);
     assert_eq!(
         "7f69e13a7ff6911a9fa79b3592c8432536adc30d39accb5a7070eff0cb71beef",
+        root_hash.to_hex()
+    );
+}
+
+/// Tests MARF cache behavior with compression using 15.500 inserts across 10 blocks.
+///
+/// The purpose of this test is to verify that enabling compression produces
+/// the same root hash as running without compression.
+/// For all configurations, the resulting root hash must remain stable.
+///
+/// The batch size is intentionally set above 10.000 to force batched insertion
+/// and exercise the `eta` batching logic.
+#[rstest]
+#[case::noop_immediate_batch_15500(&opts::OPTS_NOOP_IMM_EXT, 15500)]
+#[case::noop_deferred_compress_batch_15500(&opts::OPTS_NOOP_DEF_COMP, 15500)]
+fn test_marf_cache_15500_2(#[case] marf_opts: &MARFOpenOpts, #[case] batch_size: usize) {
+    let test_data = make_test_insert_data(15500, 2);
+    let root_hash =
+        utils::run_test_with_string_keys(function_name_no_ns!(), &test_data, marf_opts, batch_size);
+    assert_eq!(
+        "6c82bb9437d4fdb957a0097873dbfb6c7b10f37ffa640c5632e7773daceeb88c",
         root_hash.to_hex()
     );
 }
