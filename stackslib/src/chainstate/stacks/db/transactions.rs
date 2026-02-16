@@ -1285,13 +1285,13 @@ impl StacksChainState {
                             }
                             other_error => {
                                 if let ClarityError::Parse(err) = &other_error {
-                                    if err.rejectable() {
+                                    if err.rejectable_in_epoch(clarity_tx.get_epoch()) {
                                         info!("Transaction {} is problematic and should have prevented this block from being relayed", tx.txid());
                                         return Err(Error::ClarityError(other_error));
                                     }
                                 }
                                 if let ClarityError::StaticCheck(err) = &other_error {
-                                    if err.err.rejectable() {
+                                    if err.err.rejectable_in_epoch(clarity_tx.get_epoch()) {
                                         info!("Transaction {} is problematic and should have prevented this block from being relayed", tx.txid());
                                         return Err(Error::ClarityError(other_error));
                                     }
