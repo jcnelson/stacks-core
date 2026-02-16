@@ -25,6 +25,7 @@ use stacks_common::types::StacksEpochId;
 
 use crate::burnchains::Burnchain;
 use crate::chainstate::burn::db::sortdb::SortitionDB;
+use crate::chainstate::coordinator::OnChainRewardSetProvider;
 use crate::chainstate::stacks::boot::{POX_1_NAME, POX_2_NAME, POX_3_NAME, POX_4_NAME};
 use crate::chainstate::stacks::db::StacksChainState;
 use crate::chainstate::stacks::Error as ChainError;
@@ -348,17 +349,35 @@ impl RPCPoxInfoData {
 
         let reward_slots = pox_consts.reward_slots() as u64;
 
-        let cur_cycle_threshold = StacksChainState::get_threshold_from_participation(
+        let cur_cycle_threshold_live = StacksChainState::get_threshold_from_participation(
             total_liquid_supply_ustx as u128,
             cur_cycle_stacked_ustx,
             reward_slots as u128,
         ) as u64;
 
-        let next_threshold = StacksChainState::get_threshold_from_participation(
+        let next_threshold_live = StacksChainState::get_threshold_from_participation(
             total_liquid_supply_ustx as u128,
             next_cycle_stacked_ustx,
             reward_slots as u128,
         ) as u64;
+
+        let cur_cycle_threshold = Self::get_persisted_cycle_threshold(
+            sortdb,
+            chainstate,
+            tip,
+            &burnchain_tip,
+            reward_cycle_id,
+        )
+        .unwrap_or(cur_cycle_threshold_live);
+
+        let next_threshold = Self::get_persisted_cycle_threshold(
+            sortdb,
+            chainstate,
+            tip,
+            &burnchain_tip,
+            reward_cycle_id + 1,
+        )
+        .unwrap_or(next_threshold_live);
 
         let pox_activation_threshold_ustx = (total_liquid_supply_ustx as u128)
             .checked_mul(pox_consts.pox_participation_threshold_pct as u128)
@@ -448,6 +467,46 @@ impl RPCPoxInfoData {
                 },
             ],
         })
+    }
+
+    /// Load a reward cycle's threshold from stored reward set data, if available.
+    /// Falls back to `None` if the reward set has not been persisted yet.
+    fn get_persisted_cycle_threshold(
+        sortdb: &SortitionDB,
+        chainstate: &mut StacksChainState,
+        tip: &StacksBlockId,
+        burnchain_tip: &crate::chainstate::burn::BlockSnapshot,
+        reward_cycle_id: u64,
+    ) -> Option<u64> {
+        let provider = OnChainRewardSetProvider::new();
+
+        // In Nakamoto, the reward set is persisted in chainstate as part of .signers updates.
+        if let Ok(reward_set) =
+            provider.read_reward_set_nakamoto(chainstate, reward_cycle_id, sortdb, tip, true)
+        {
+            if let Some(threshold) = reward_set
+                .pox_ustx_threshold
+                .and_then(|threshold| u64::try_from(threshold).ok())
+            {
+                return Some(threshold);
+            }
+        }
+
+        // In epoch2-era processing, reward set data is persisted in sortition DB.
+        if let Ok((reward_cycle_info, _)) = sortdb.get_preprocessed_reward_set_for_reward_cycle(
+            &burnchain_tip.sortition_id,
+            reward_cycle_id,
+        ) {
+            if let Some(threshold) = reward_cycle_info
+                .known_selected_anchor_block()
+                .and_then(|reward_set| reward_set.pox_ustx_threshold)
+                .and_then(|threshold| u64::try_from(threshold).ok())
+            {
+                return Some(threshold);
+            }
+        }
+
+        None
     }
 }
 
