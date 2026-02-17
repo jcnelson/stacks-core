@@ -786,15 +786,16 @@ fn marf_invalid_ancestor() {
 
 #[test]
 fn marf_merkle_verify_backptrs() {
-    for marf_opts in opts::ALL_OPTS_NOOP.clone().into_iter() {
-        for node_id in [
-            TrieNodeID::Node4,
-            TrieNodeID::Node16,
-            TrieNodeID::Node48,
-            TrieNodeID::Node256,
-        ]
-        .iter()
-        {
+    for node_id in [
+        TrieNodeID::Node4,
+        TrieNodeID::Node16,
+        TrieNodeID::Node48,
+        TrieNodeID::Node256,
+    ]
+    .iter()
+    {
+        let mut last_root_hashes = None;
+        for marf_opts in opts::ALL_OPTS_NOOP.clone().into_iter() {
             let mut f_store = TrieFileStorage::new_memory(marf_opts.clone()).unwrap();
 
             let path_segments = vec![
@@ -883,6 +884,21 @@ fn marf_merkle_verify_backptrs() {
                 &[21; 40],
                 None,
             );
+
+            if marf.borrow_storage_backend().hash_calculation_mode
+                == TrieHashCalculationMode::Deferred
+            {
+                continue;
+            }
+
+            let curr_root_hashes = marf
+                .borrow_storage_backend()
+                .read_root_to_block_table()
+                .unwrap();
+            if let Some(prev_root_hashes) = last_root_hashes.take() {
+                assert_eq!(prev_root_hashes, curr_root_hashes);
+            }
+            last_root_hashes = Some(curr_root_hashes);
         }
     }
 }
