@@ -252,10 +252,6 @@ pub enum StaticCheckErrorKind {
     // Unexpected interpreter behavior
     /// Unexpected condition or failure in the type-checker, indicating a bug or invalid state.
     ExpectsRejectable(String),
-    // Unexpected interpreter behavior
-    /// Unexpected condition or failure in the type-checker, indicating a bug or invalid state.
-    /// This error does NOT indicate a transaction would invalidate a block if included.
-    ExpectsAcceptable(String),
 
     // Match expression errors
     /// Invalid syntax in an `option` match expression.
@@ -727,10 +723,8 @@ impl From<ClarityTypeError> for StaticCheckErrorKind {
             | ClarityTypeError::TypeMismatchValue(_, _)
             | ClarityTypeError::ResponseTypeMismatch { .. }
             | ClarityTypeError::InvalidAsciiCharacter(_)
-            | ClarityTypeError::InvalidUtf8Encoding => Self::ExpectsAcceptable(format!(
-                "Unexpected error type during static analysis: {err}"
-            )),
-            ClarityTypeError::InvariantViolation(_)
+            | ClarityTypeError::InvalidUtf8Encoding
+            | ClarityTypeError::InvariantViolation(_)
             | ClarityTypeError::InvalidPrincipalVersion(_) => Self::ExpectsRejectable(format!(
                 "Unexpected error type during static analysis: {err}"
             )),
@@ -1109,7 +1103,6 @@ impl DiagnosableError for StaticCheckErrorKind {
         match &self {
             StaticCheckErrorKind::SupertypeTooLarge => "supertype of two types is too large".into(),
             StaticCheckErrorKind::ExpectsRejectable(s) => format!("unexpected and unacceptable interpreter behavior: {s}"),
-            StaticCheckErrorKind::ExpectsAcceptable(s) => format!("unexpected but acceptable interpreter behaviour: {s}"),
             StaticCheckErrorKind::BadMatchOptionSyntax(source) =>
                 format!("match on a optional type uses the following syntax: (match input some-name if-some-expression if-none-expression). Caused by: {}",
                         source.message()),
