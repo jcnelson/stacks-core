@@ -329,13 +329,13 @@ impl DefinedFunction {
         let trait_name = trait_identifier.name.to_string();
         let constraining_trait = contract_defining_trait
             .lookup_trait_definition(&trait_name)
-            .ok_or(RuntimeCheckErrorKind::ExpectsAcceptable(format!(
+            .ok_or(RuntimeCheckErrorKind::ExpectsRejectable(format!(
                 "Trait reference unknown: {trait_name}"
             )))?;
         let expected_sig =
             constraining_trait
                 .get(&self.name)
-                .ok_or(RuntimeCheckErrorKind::ExpectsAcceptable(format!(
+                .ok_or(RuntimeCheckErrorKind::ExpectsRejectable(format!(
                     "Trait method unknown: {trait_name}.{}",
                     self.name
                 )))?;

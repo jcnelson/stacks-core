@@ -196,7 +196,7 @@ fn lookup_variable(
             }
         } else {
             Err(
-                RuntimeCheckErrorKind::ExpectsAcceptable(format!("Undefined variable: {name}"))
+                RuntimeCheckErrorKind::ExpectsRejectable(format!("Undefined variable: {name}"))
                     .into(),
             )
         }
@@ -354,12 +354,12 @@ pub fn eval(
                 let (function_variable, rest) =
                     children
                         .split_first()
-                        .ok_or(RuntimeCheckErrorKind::ExpectsAcceptable(
+                        .ok_or(RuntimeCheckErrorKind::ExpectsRejectable(
                             "Non functional application".to_string(),
                         ))?;
 
                 let function_name = function_variable.match_atom().ok_or(
-                    RuntimeCheckErrorKind::ExpectsAcceptable("Bad function name".to_string()),
+                    RuntimeCheckErrorKind::ExpectsRejectable("Bad function name".to_string()),
                 )?;
                 let f = lookup_function(function_name, env)?;
                 apply(&f, rest, env, context)

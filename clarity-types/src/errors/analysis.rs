@@ -563,8 +563,6 @@ pub enum RuntimeCheckErrorKind {
     // Unexpected interpreter behavior
     /// Unexpected condition or failure in the type-checker, indicating a catastrophic bug or invalid state.
     ExpectsRejectable(String),
-    /// Unexpected condition or failure in the type-checker, indicating a noncatastrophic bug or invalid state.
-    ExpectsAcceptable(String),
 
     // List typing errors
     /// List elements have mismatched types, violating type consistency.
@@ -803,7 +801,7 @@ impl From<ClarityTypeError> for RuntimeCheckErrorKind {
             | ClarityTypeError::InvalidTypeDescription
             | ClarityTypeError::NoSuchTupleField(_, _)
             | ClarityTypeError::EmptyTuplesNotAllowed
-            | ClarityTypeError::ResponseTypeMismatch { .. } => Self::ExpectsAcceptable(format!(
+            | ClarityTypeError::ResponseTypeMismatch { .. } => Self::ExpectsRejectable(format!(
                 "Unexpected error type during runtime analysis: {err}"
             )),
             ClarityTypeError::InvariantViolation(_)
@@ -955,49 +953,49 @@ impl From<CommonCheckErrorKind> for RuntimeCheckErrorKind {
                 RuntimeCheckErrorKind::IncorrectArgumentCount(expected, args)
             }
             CommonCheckErrorKind::RequiresAtLeastArguments(expected, args) => {
-                RuntimeCheckErrorKind::ExpectsAcceptable(format!(
+                RuntimeCheckErrorKind::ExpectsRejectable(format!(
                     "Requires at least args: {expected} got {args}"
                 ))
             }
             CommonCheckErrorKind::RequiresAtMostArguments(expected, args) => {
-                RuntimeCheckErrorKind::ExpectsAcceptable(format!(
+                RuntimeCheckErrorKind::ExpectsRejectable(format!(
                     "Requires at most args: {expected} got {args}"
                 ))
             }
             CommonCheckErrorKind::TooManyFunctionParameters(found, allowed) => {
-                RuntimeCheckErrorKind::ExpectsAcceptable(format!(
+                RuntimeCheckErrorKind::ExpectsRejectable(format!(
                     "Too many function params: found {found}, allowed {allowed}"
                 ))
             }
             CommonCheckErrorKind::ExpectedName => {
-                RuntimeCheckErrorKind::ExpectsAcceptable("Expected name".to_string())
+                RuntimeCheckErrorKind::ExpectsRejectable("Expected name".to_string())
             }
             CommonCheckErrorKind::DefineFunctionBadSignature => {
-                RuntimeCheckErrorKind::ExpectsAcceptable(
+                RuntimeCheckErrorKind::ExpectsRejectable(
                     "Define function bad signature".to_string(),
                 )
             }
             CommonCheckErrorKind::ExpectedTraitIdentifier => {
-                RuntimeCheckErrorKind::ExpectsAcceptable("Expected trait identifier".to_string())
+                RuntimeCheckErrorKind::ExpectsRejectable("Expected trait identifier".to_string())
             }
             CommonCheckErrorKind::DefineTraitDuplicateMethod(s) => {
-                RuntimeCheckErrorKind::ExpectsAcceptable(format!(
+                RuntimeCheckErrorKind::ExpectsRejectable(format!(
                     "Define trait duplicate method: {s}"
                 ))
             }
             CommonCheckErrorKind::TraitTooManyMethods(found, allowed) => {
-                RuntimeCheckErrorKind::ExpectsAcceptable(format!(
+                RuntimeCheckErrorKind::ExpectsRejectable(format!(
                     "Trait too many methods: found {found}, allowed {allowed}"
                 ))
             }
             CommonCheckErrorKind::DefineTraitBadSignature => {
-                RuntimeCheckErrorKind::ExpectsAcceptable("Define trait bad signature".to_string())
+                RuntimeCheckErrorKind::ExpectsRejectable("Define trait bad signature".to_string())
             }
             CommonCheckErrorKind::BadSyntaxBinding(e) => {
-                RuntimeCheckErrorKind::ExpectsAcceptable(format!("Bad syntax binding: {e}"))
+                RuntimeCheckErrorKind::ExpectsRejectable(format!("Bad syntax binding: {e}"))
             }
             CommonCheckErrorKind::UnknownTypeName(name) => {
-                RuntimeCheckErrorKind::ExpectsAcceptable(format!("Unknown type name: {name}"))
+                RuntimeCheckErrorKind::ExpectsRejectable(format!("Unknown type name: {name}"))
             }
         }
     }

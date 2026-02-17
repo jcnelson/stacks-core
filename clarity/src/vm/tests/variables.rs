@@ -80,7 +80,7 @@ fn test_block_height(
         let err = eval_result.unwrap_err();
         assert_eq!(
             ClarityEvalError::Vm(VmExecutionError::RuntimeCheck(
-                RuntimeCheckErrorKind::ExpectsAcceptable(
+                RuntimeCheckErrorKind::ExpectsRejectable(
                     "Undefined variable: block-height".to_string()
                 )
             )),
@@ -141,7 +141,7 @@ fn test_stacks_block_height(
         let err = eval_result.unwrap_err();
         assert_eq!(
             ClarityEvalError::Vm(VmExecutionError::RuntimeCheck(
-                RuntimeCheckErrorKind::ExpectsAcceptable(
+                RuntimeCheckErrorKind::ExpectsRejectable(
                     "Undefined variable: stacks-block-height".to_string()
                 )
             )),
@@ -202,7 +202,7 @@ fn test_tenure_height(
         let err = eval_result.unwrap_err();
         assert_eq!(
             ClarityEvalError::Vm(VmExecutionError::RuntimeCheck(
-                RuntimeCheckErrorKind::ExpectsAcceptable(
+                RuntimeCheckErrorKind::ExpectsRejectable(
                     "Undefined variable: tenure-height".to_string()
                 )
             )),
@@ -1219,7 +1219,7 @@ fn test_block_time(
         let err = eval_result.unwrap_err();
         assert_eq!(
             ClarityEvalError::Vm(VmExecutionError::RuntimeCheck(
-                RuntimeCheckErrorKind::ExpectsAcceptable(
+                RuntimeCheckErrorKind::ExpectsRejectable(
                     "Undefined variable: stacks-block-time".to_string()
                 )
             )),
@@ -1347,7 +1347,7 @@ fn test_current_contract(
         let err = eval_result.unwrap_err();
         assert_eq!(
             ClarityEvalError::Vm(VmExecutionError::RuntimeCheck(
-                RuntimeCheckErrorKind::ExpectsAcceptable(
+                RuntimeCheckErrorKind::ExpectsRejectable(
                     "Undefined variable: current-contract".to_string()
                 )
             )),

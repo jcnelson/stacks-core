@@ -1170,7 +1170,7 @@ impl<'a, 'b, 'hooks> Environment<'a, 'b, 'hooks> {
             if !allow_private && !func.is_public() {
                 return Err(RuntimeCheckErrorKind::NoSuchPublicFunction(contract_identifier.to_string(), tx_name.to_string()).into());
             } else if read_only && !func.is_read_only() {
-                return Err(RuntimeCheckErrorKind::ExpectsAcceptable(format!("Public function not read-only: {contract_identifier} {tx_name}")).into());
+                return Err(RuntimeCheckErrorKind::ExpectsRejectable(format!("Public function not read-only: {contract_identifier} {tx_name}")).into());
             }
 
             let args: Result<Vec<Value>, VmExecutionError> = args.iter()
@@ -1338,7 +1338,7 @@ impl<'a, 'b, 'hooks> Environment<'a, 'b, 'hooks> {
                 .database
                 .has_contract(&contract_identifier)
             {
-                return Err(RuntimeCheckErrorKind::ExpectsAcceptable(format!(
+                return Err(RuntimeCheckErrorKind::ExpectsRejectable(format!(
                     "Contract already exists: {contract_identifier}"
                 ))
                 .into());
@@ -1876,7 +1876,7 @@ impl<'a, 'hooks> GlobalContext<'a, 'hooks> {
                 self.commit()?;
                 Ok(result)
             } else {
-                Err(RuntimeCheckErrorKind::ExpectsAcceptable(format!(
+                Err(RuntimeCheckErrorKind::ExpectsRejectable(format!(
                     "Public function must return response: {}",
                     TypeSignature::type_of(&result)?
                 ))
@@ -2506,7 +2506,7 @@ mod test {
 
         assert_eq!(
             err,
-            VmExecutionError::RuntimeCheck(RuntimeCheckErrorKind::ExpectsAcceptable(
+            VmExecutionError::RuntimeCheck(RuntimeCheckErrorKind::ExpectsRejectable(
                 "Contract already exists: S1G2081040G2081040G2081040G208105NK8PE5.dup".to_string()
             ))
         );

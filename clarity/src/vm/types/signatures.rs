@@ -716,78 +716,78 @@ mod test {
         let bad_type_descriptions = [
             (
                 "(tuple)",
-                ExpectsAcceptable(
+                ExpectsRejectable(
                     "Unexpected error type during runtime analysis: EmptyTuplesNotAllowed"
                         .to_string(),
                 ),
             ),
             (
                 "(list int int)",
-                ExpectsAcceptable(
+                ExpectsRejectable(
                     "Unexpected error type during runtime analysis: InvalidTypeDescription".into(),
                 ),
             ),
             ("(list 4294967296 int)", ValueTooLarge),
             (
                 "(list 50 bazel)",
-                ExpectsAcceptable("Unknown type name: bazel".into()),
+                ExpectsRejectable("Unknown type name: bazel".into()),
             ),
             (
                 "(buff)",
-                ExpectsAcceptable(
+                ExpectsRejectable(
                     "Unexpected error type during runtime analysis: InvalidTypeDescription".into(),
                 ),
             ),
             ("(buff 4294967296)", ValueTooLarge),
             (
                 "(buff int)",
-                ExpectsAcceptable(
+                ExpectsRejectable(
                     "Unexpected error type during runtime analysis: InvalidTypeDescription".into(),
                 ),
             ),
             (
                 "(response int)",
-                ExpectsAcceptable(
+                ExpectsRejectable(
                     "Unexpected error type during runtime analysis: InvalidTypeDescription".into(),
                 ),
             ),
             (
                 "(optional bazel)",
-                ExpectsAcceptable("Unknown type name: bazel".into()),
+                ExpectsRejectable("Unknown type name: bazel".into()),
             ),
             (
                 "(response bazel int)",
-                ExpectsAcceptable("Unknown type name: bazel".into()),
+                ExpectsRejectable("Unknown type name: bazel".into()),
             ),
             (
                 "(response int bazel)",
-                ExpectsAcceptable("Unknown type name: bazel".into()),
+                ExpectsRejectable("Unknown type name: bazel".into()),
             ),
             (
                 "bazel",
-                ExpectsAcceptable("Unknown type name: bazel".into()),
+                ExpectsRejectable("Unknown type name: bazel".into()),
             ),
             (
                 "()",
-                ExpectsAcceptable(
+                ExpectsRejectable(
                     "Unexpected error type during runtime analysis: InvalidTypeDescription".into(),
                 ),
             ),
             (
                 "(1234)",
-                ExpectsAcceptable(
+                ExpectsRejectable(
                     "Unexpected error type during runtime analysis: InvalidTypeDescription".into(),
                 ),
             ),
             (
                 "(int 3 int)",
-                ExpectsAcceptable(
+                ExpectsRejectable(
                     "Unexpected error type during runtime analysis: InvalidTypeDescription".into(),
                 ),
             ),
             (
                 "1234",
-                ExpectsAcceptable(
+                ExpectsRejectable(
                     "Unexpected error type during runtime analysis: InvalidTypeDescription".into(),
                 ),
             ),

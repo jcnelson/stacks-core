@@ -141,14 +141,14 @@ fn handle_define_function(
     let (function_symbol, arg_symbols) =
         signature
             .split_first()
-            .ok_or(RuntimeCheckErrorKind::ExpectsAcceptable(
+            .ok_or(RuntimeCheckErrorKind::ExpectsRejectable(
                 "Define function bad signature".to_string(),
             ))?;
 
     let function_name =
         function_symbol
             .match_atom()
-            .ok_or(RuntimeCheckErrorKind::ExpectsAcceptable(
+            .ok_or(RuntimeCheckErrorKind::ExpectsRejectable(
                 "Expected name".to_string(),
             ))?;
 
@@ -543,7 +543,7 @@ mod test {
             .unwrap_err();
 
         assert_eq!(
-            VmExecutionError::RuntimeCheck(RuntimeCheckErrorKind::ExpectsAcceptable(
+            VmExecutionError::RuntimeCheck(RuntimeCheckErrorKind::ExpectsRejectable(
                 "Bad syntax binding: NotList(Eval, 0)".to_string()
             )),
             err,
@@ -602,7 +602,7 @@ mod test {
         let err = handle_define_trait(&"bad-trait".into(), &trait_body, &mut env).unwrap_err();
 
         assert_eq!(
-            VmExecutionError::RuntimeCheck(RuntimeCheckErrorKind::ExpectsAcceptable(
+            VmExecutionError::RuntimeCheck(RuntimeCheckErrorKind::ExpectsRejectable(
                 "Too many function params: found 257, allowed 256".to_string()
             )),
             err

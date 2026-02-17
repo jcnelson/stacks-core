@@ -71,7 +71,7 @@ pub fn special_contract_call(
 
     let function_name = args[1]
         .match_atom()
-        .ok_or(RuntimeCheckErrorKind::ExpectsAcceptable(
+        .ok_or(RuntimeCheckErrorKind::ExpectsRejectable(
             "Expected name".to_string(),
         ))?;
     let rest_args_slice = &args[2..];
@@ -117,7 +117,7 @@ pub fn special_contract_call(
                     // This error case indicates a bad implementation. Only traits should be
                     // added to callable_contracts.
                     let trait_identifier = trait_data.trait_identifier.as_ref().ok_or(
-                        RuntimeCheckErrorKind::ExpectsAcceptable(
+                        RuntimeCheckErrorKind::ExpectsRejectable(
                             "Expected trait identifier".to_string(),
                         ),
                     )?;
@@ -154,7 +154,7 @@ pub fn special_contract_call(
 
                         // Check read/write compatibility
                         if env.global_context.is_read_only() {
-                            return Err(RuntimeCheckErrorKind::ExpectsAcceptable(
+                            return Err(RuntimeCheckErrorKind::ExpectsRejectable(
                                 "Trait based contract call in read-only".to_string(),
                             )
                             .into());
@@ -178,11 +178,11 @@ pub fn special_contract_call(
                         // Retrieve the expected method signature
                         let constraining_trait = contract_context_defining_trait
                             .lookup_trait_definition(&trait_name)
-                            .ok_or(RuntimeCheckErrorKind::ExpectsAcceptable(format!(
+                            .ok_or(RuntimeCheckErrorKind::ExpectsRejectable(format!(
                                 "Trait reference unknown: {trait_name}"
                             )))?;
                         let expected_sig = constraining_trait.get(function_name).ok_or(
-                            RuntimeCheckErrorKind::ExpectsAcceptable(format!(
+                            RuntimeCheckErrorKind::ExpectsRejectable(format!(
                                 "Trait method unknown: {trait_name}.{function_name}"
                             )),
                         )?;
@@ -243,14 +243,14 @@ pub fn special_fetch_variable_v200(
 
     let var_name = args[0]
         .match_atom()
-        .ok_or(RuntimeCheckErrorKind::ExpectsAcceptable(
+        .ok_or(RuntimeCheckErrorKind::ExpectsRejectable(
             "Expected name".to_string(),
         ))?;
 
     let contract = &env.contract_context.contract_identifier;
 
     let data_types = env.contract_context.meta_data_var.get(var_name).ok_or(
-        RuntimeCheckErrorKind::ExpectsAcceptable(format!("No such data variable: {var_name}")),
+        RuntimeCheckErrorKind::ExpectsRejectable(format!("No such data variable: {var_name}")),
     )?;
 
     runtime_cost(
@@ -276,14 +276,14 @@ pub fn special_fetch_variable_v205(
 
     let var_name = args[0]
         .match_atom()
-        .ok_or(RuntimeCheckErrorKind::ExpectsAcceptable(
+        .ok_or(RuntimeCheckErrorKind::ExpectsRejectable(
             "Expected name".to_string(),
         ))?;
 
     let contract = &env.contract_context.contract_identifier;
 
     let data_types = env.contract_context.meta_data_var.get(var_name).ok_or(
-        RuntimeCheckErrorKind::ExpectsAcceptable(format!("No such data variable: {var_name}")),
+        RuntimeCheckErrorKind::ExpectsRejectable(format!("No such data variable: {var_name}")),
     )?;
 
     let epoch = *env.epoch();
@@ -308,7 +308,7 @@ pub fn special_set_variable_v200(
     context: &LocalContext,
 ) -> Result<Value, VmExecutionError> {
     if env.global_context.is_read_only() {
-        return Err(RuntimeCheckErrorKind::ExpectsAcceptable(
+        return Err(RuntimeCheckErrorKind::ExpectsRejectable(
             "Write attempted in read-only".to_string(),
         )
         .into());
@@ -320,14 +320,14 @@ pub fn special_set_variable_v200(
 
     let var_name = args[0]
         .match_atom()
-        .ok_or(RuntimeCheckErrorKind::ExpectsAcceptable(
+        .ok_or(RuntimeCheckErrorKind::ExpectsRejectable(
             "Expected name".to_string(),
         ))?;
 
     let contract = &env.contract_context.contract_identifier;
 
     let data_types = env.contract_context.meta_data_var.get(var_name).ok_or(
-        RuntimeCheckErrorKind::ExpectsAcceptable(format!("No such data variable: {var_name}")),
+        RuntimeCheckErrorKind::ExpectsRejectable(format!("No such data variable: {var_name}")),
     )?;
 
     runtime_cost(
@@ -353,7 +353,7 @@ pub fn special_set_variable_v205(
     context: &LocalContext,
 ) -> Result<Value, VmExecutionError> {
     if env.global_context.is_read_only() {
-        return Err(RuntimeCheckErrorKind::ExpectsAcceptable(
+        return Err(RuntimeCheckErrorKind::ExpectsRejectable(
             "Write attempted in read-only".to_string(),
         )
         .into());
@@ -365,14 +365,14 @@ pub fn special_set_variable_v205(
 
     let var_name = args[0]
         .match_atom()
-        .ok_or(RuntimeCheckErrorKind::ExpectsAcceptable(
+        .ok_or(RuntimeCheckErrorKind::ExpectsRejectable(
             "Expected name".to_string(),
         ))?;
 
     let contract = &env.contract_context.contract_identifier;
 
     let data_types = env.contract_context.meta_data_var.get(var_name).ok_or(
-        RuntimeCheckErrorKind::ExpectsAcceptable(format!("No such data variable: {var_name}")),
+        RuntimeCheckErrorKind::ExpectsRejectable(format!("No such data variable: {var_name}")),
     )?;
 
     let epoch = *env.epoch();
@@ -402,7 +402,7 @@ pub fn special_fetch_entry_v200(
 
     let map_name = args[0]
         .match_atom()
-        .ok_or(RuntimeCheckErrorKind::ExpectsAcceptable(
+        .ok_or(RuntimeCheckErrorKind::ExpectsRejectable(
             "Expected name".to_string(),
         ))?;
 
@@ -411,7 +411,7 @@ pub fn special_fetch_entry_v200(
     let contract = &env.contract_context.contract_identifier;
 
     let data_types = env.contract_context.meta_data_map.get(map_name).ok_or(
-        RuntimeCheckErrorKind::ExpectsAcceptable(format!("No such map: {map_name}")),
+        RuntimeCheckErrorKind::ExpectsRejectable(format!("No such map: {map_name}")),
     )?;
 
     runtime_cost(
@@ -437,7 +437,7 @@ pub fn special_fetch_entry_v205(
 
     let map_name = args[0]
         .match_atom()
-        .ok_or(RuntimeCheckErrorKind::ExpectsAcceptable(
+        .ok_or(RuntimeCheckErrorKind::ExpectsRejectable(
             "Expected name".to_string(),
         ))?;
 
@@ -446,7 +446,7 @@ pub fn special_fetch_entry_v205(
     let contract = &env.contract_context.contract_identifier;
 
     let data_types = env.contract_context.meta_data_map.get(map_name).ok_or(
-        RuntimeCheckErrorKind::ExpectsAcceptable(format!("No such map: {map_name}")),
+        RuntimeCheckErrorKind::ExpectsRejectable(format!("No such map: {map_name}")),
     )?;
 
     let epoch = *env.epoch();
@@ -504,7 +504,7 @@ pub fn special_set_entry_v200(
     context: &LocalContext,
 ) -> Result<Value, VmExecutionError> {
     if env.global_context.is_read_only() {
-        return Err(RuntimeCheckErrorKind::ExpectsAcceptable(
+        return Err(RuntimeCheckErrorKind::ExpectsRejectable(
             "Write attempted in read-only".to_string(),
         )
         .into());
@@ -518,14 +518,14 @@ pub fn special_set_entry_v200(
 
     let map_name = args[0]
         .match_atom()
-        .ok_or(RuntimeCheckErrorKind::ExpectsAcceptable(
+        .ok_or(RuntimeCheckErrorKind::ExpectsRejectable(
             "Expected name".to_string(),
         ))?;
 
     let contract = &env.contract_context.contract_identifier;
 
     let data_types = env.contract_context.meta_data_map.get(map_name).ok_or(
-        RuntimeCheckErrorKind::ExpectsAcceptable(format!("No such map: {map_name}")),
+        RuntimeCheckErrorKind::ExpectsRejectable(format!("No such map: {map_name}")),
     )?;
 
     runtime_cost(
@@ -552,7 +552,7 @@ pub fn special_set_entry_v205(
     context: &LocalContext,
 ) -> Result<Value, VmExecutionError> {
     if env.global_context.is_read_only() {
-        return Err(RuntimeCheckErrorKind::ExpectsAcceptable(
+        return Err(RuntimeCheckErrorKind::ExpectsRejectable(
             "Write attempted in read-only".to_string(),
         )
         .into());
@@ -566,14 +566,14 @@ pub fn special_set_entry_v205(
 
     let map_name = args[0]
         .match_atom()
-        .ok_or(RuntimeCheckErrorKind::ExpectsAcceptable(
+        .ok_or(RuntimeCheckErrorKind::ExpectsRejectable(
             "Expected name".to_string(),
         ))?;
 
     let contract = &env.contract_context.contract_identifier;
 
     let data_types = env.contract_context.meta_data_map.get(map_name).ok_or(
-        RuntimeCheckErrorKind::ExpectsAcceptable(format!("No such map: {map_name}")),
+        RuntimeCheckErrorKind::ExpectsRejectable(format!("No such map: {map_name}")),
     )?;
 
     let epoch = *env.epoch();
@@ -600,7 +600,7 @@ pub fn special_insert_entry_v200(
     context: &LocalContext,
 ) -> Result<Value, VmExecutionError> {
     if env.global_context.is_read_only() {
-        return Err(RuntimeCheckErrorKind::ExpectsAcceptable(
+        return Err(RuntimeCheckErrorKind::ExpectsRejectable(
             "Write attempted in read-only".to_string(),
         )
         .into());
@@ -614,14 +614,14 @@ pub fn special_insert_entry_v200(
 
     let map_name = args[0]
         .match_atom()
-        .ok_or(RuntimeCheckErrorKind::ExpectsAcceptable(
+        .ok_or(RuntimeCheckErrorKind::ExpectsRejectable(
             "Expected name".to_string(),
         ))?;
 
     let contract = &env.contract_context.contract_identifier;
 
     let data_types = env.contract_context.meta_data_map.get(map_name).ok_or(
-        RuntimeCheckErrorKind::ExpectsAcceptable(format!("No such map: {map_name}")),
+        RuntimeCheckErrorKind::ExpectsRejectable(format!("No such map: {map_name}")),
     )?;
 
     runtime_cost(
@@ -649,7 +649,7 @@ pub fn special_insert_entry_v205(
     context: &LocalContext,
 ) -> Result<Value, VmExecutionError> {
     if env.global_context.is_read_only() {
-        return Err(RuntimeCheckErrorKind::ExpectsAcceptable(
+        return Err(RuntimeCheckErrorKind::ExpectsRejectable(
             "Write attempted in read-only".to_string(),
         )
         .into());
@@ -663,14 +663,14 @@ pub fn special_insert_entry_v205(
 
     let map_name = args[0]
         .match_atom()
-        .ok_or(RuntimeCheckErrorKind::ExpectsAcceptable(
+        .ok_or(RuntimeCheckErrorKind::ExpectsRejectable(
             "Expected name".to_string(),
         ))?;
 
     let contract = &env.contract_context.contract_identifier;
 
     let data_types = env.contract_context.meta_data_map.get(map_name).ok_or(
-        RuntimeCheckErrorKind::ExpectsAcceptable(format!("No such map: {map_name}")),
+        RuntimeCheckErrorKind::ExpectsRejectable(format!("No such map: {map_name}")),
     )?;
 
     let epoch = *env.epoch();
@@ -697,7 +697,7 @@ pub fn special_delete_entry_v200(
     context: &LocalContext,
 ) -> Result<Value, VmExecutionError> {
     if env.global_context.is_read_only() {
-        return Err(RuntimeCheckErrorKind::ExpectsAcceptable(
+        return Err(RuntimeCheckErrorKind::ExpectsRejectable(
             "Write attempted in read-only".to_string(),
         )
         .into());
@@ -709,14 +709,14 @@ pub fn special_delete_entry_v200(
 
     let map_name = args[0]
         .match_atom()
-        .ok_or(RuntimeCheckErrorKind::ExpectsAcceptable(
+        .ok_or(RuntimeCheckErrorKind::ExpectsRejectable(
             "Expected name".to_string(),
         ))?;
 
     let contract = &env.contract_context.contract_identifier;
 
     let data_types = env.contract_context.meta_data_map.get(map_name).ok_or(
-        RuntimeCheckErrorKind::ExpectsAcceptable(format!("No such map: {map_name}")),
+        RuntimeCheckErrorKind::ExpectsRejectable(format!("No such map: {map_name}")),
     )?;
 
     runtime_cost(
@@ -742,7 +742,7 @@ pub fn special_delete_entry_v205(
     context: &LocalContext,
 ) -> Result<Value, VmExecutionError> {
     if env.global_context.is_read_only() {
-        return Err(RuntimeCheckErrorKind::ExpectsAcceptable(
+        return Err(RuntimeCheckErrorKind::ExpectsRejectable(
             "Write attempted in read-only".to_string(),
         )
         .into());
@@ -754,14 +754,14 @@ pub fn special_delete_entry_v205(
 
     let map_name = args[0]
         .match_atom()
-        .ok_or(RuntimeCheckErrorKind::ExpectsAcceptable(
+        .ok_or(RuntimeCheckErrorKind::ExpectsRejectable(
             "Expected name".to_string(),
         ))?;
 
     let contract = &env.contract_context.contract_identifier;
 
     let data_types = env.contract_context.meta_data_map.get(map_name).ok_or(
-        RuntimeCheckErrorKind::ExpectsAcceptable(format!("No such map: {map_name}")),
+        RuntimeCheckErrorKind::ExpectsRejectable(format!("No such map: {map_name}")),
     )?;
 
     let epoch = *env.epoch();
@@ -815,14 +815,14 @@ pub fn special_get_block_info(
     // Handle the block property name input arg.
     let property_name = args[0]
         .match_atom()
-        .ok_or(RuntimeCheckErrorKind::ExpectsAcceptable(
+        .ok_or(RuntimeCheckErrorKind::ExpectsRejectable(
             "Get block info expect property name".to_string(),
         ))?;
 
     let version = env.contract_context.get_clarity_version();
 
     let block_info_prop = BlockInfoProperty::lookup_by_name_at_version(property_name, version)
-        .ok_or(RuntimeCheckErrorKind::ExpectsAcceptable(
+        .ok_or(RuntimeCheckErrorKind::ExpectsRejectable(
             "Get block info expect property name".to_string(),
         ))?;
 
@@ -973,12 +973,12 @@ pub fn special_get_burn_block_info(
     // Handle the block property name input arg.
     let property_name = args[0]
         .match_atom()
-        .ok_or(RuntimeCheckErrorKind::ExpectsAcceptable(
+        .ok_or(RuntimeCheckErrorKind::ExpectsRejectable(
             "Get block info expect property name".to_string(),
         ))?;
 
     let block_info_prop = BurnBlockInfoProperty::lookup_by_name(property_name).ok_or(
-        RuntimeCheckErrorKind::ExpectsAcceptable(format!(
+        RuntimeCheckErrorKind::ExpectsRejectable(format!(
             "No such burn block info property: {property_name}"
         )),
     )?;
@@ -1063,8 +1063,7 @@ pub fn special_get_burn_block_info(
 ///
 /// # Errors:
 /// - [`RuntimeCheckErrorKind::IncorrectArgumentCount`] if there aren't 2 arguments.
-/// - [`RuntimeCheckErrorKind::ExpectsAcceptable`] if `args[0]` isn't a ClarityName.
-/// - [`RuntimeCheckErrorKind::ExpectsAcceptable`] if `args[0]` isn't a [`StacksBlockInfoProperty`].
+/// - [`RuntimeCheckErrorKind::ExpectsRejectable`] if `args[0]` isn't a ClarityName and a [`StacksBlockInfoProperty`].
 /// - [`RuntimeCheckErrorKind::TypeValueError`] if `args[1]` doesn't evaluate to a `uint`.
 /// - [`RuntimeCheckErrorKind`] cost errors (e.g., `CostOverflow`, `CostBalanceExceeded`) from [`runtime_cost`].
 /// - [`VmExecutionError`] propagated from [`eval`] when evaluating `args[1]`.
@@ -1082,12 +1081,12 @@ pub fn special_get_stacks_block_info(
     // Handle the block property name input arg.
     let property_name = args[0]
         .match_atom()
-        .ok_or(RuntimeCheckErrorKind::ExpectsAcceptable(
+        .ok_or(RuntimeCheckErrorKind::ExpectsRejectable(
             "Get stacks block info expect property name".to_string(),
         ))?;
 
     let block_info_prop = StacksBlockInfoProperty::lookup_by_name(property_name).ok_or(
-        RuntimeCheckErrorKind::ExpectsAcceptable(format!(
+        RuntimeCheckErrorKind::ExpectsRejectable(format!(
             "No such stacks block info property: {property_name}"
         )),
     )?;
@@ -1170,12 +1169,12 @@ pub fn special_get_tenure_info(
     // Handle the block property name input arg.
     let property_name = args[0]
         .match_atom()
-        .ok_or(RuntimeCheckErrorKind::ExpectsAcceptable(
+        .ok_or(RuntimeCheckErrorKind::ExpectsRejectable(
             "Get tenure info expect property name".to_string(),
         ))?;
 
     let block_info_prop = TenureInfoProperty::lookup_by_name(property_name).ok_or(
-        RuntimeCheckErrorKind::ExpectsAcceptable(
+        RuntimeCheckErrorKind::ExpectsRejectable(
             "Get tenure info expect property name".to_string(),
         ),
     )?;
