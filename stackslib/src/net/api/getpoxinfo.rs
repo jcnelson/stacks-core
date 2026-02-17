@@ -14,6 +14,8 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+use std::collections::BTreeMap;
+
 use clarity::vm::clarity::ClarityConnection;
 use clarity::vm::costs::{ExecutionCost, LimitedCostTracker};
 use clarity::vm::errors::ClarityEvalError;
@@ -37,6 +39,7 @@ use crate::net::http::{
 use crate::net::httpcore::{
     HttpRequestContentsExtensions as _, RPCRequestHandler, StacksHttpRequest, StacksHttpResponse,
 };
+use crate::net::p2p::CurrentRewardSet;
 use crate::net::{Error as NetError, StacksNodeState, TipRequest};
 use crate::util_lib::boot::boot_code_id;
 use crate::util_lib::db::Error as DBError;
@@ -133,6 +136,7 @@ impl RPCPoxInfoData {
         chainstate: &mut StacksChainState,
         tip: &StacksBlockId,
         burnchain: &Burnchain,
+        current_reward_sets: &BTreeMap<u64, CurrentRewardSet>,
     ) -> Result<RPCPoxInfoData, NetError> {
         let mainnet = chainstate.mainnet;
         let chain_id = chainstate.chain_id;
@@ -366,6 +370,7 @@ impl RPCPoxInfoData {
             chainstate,
             tip,
             &burnchain_tip,
+            current_reward_sets,
             reward_cycle_id,
         )
         .unwrap_or(cur_cycle_threshold_live);
@@ -375,6 +380,7 @@ impl RPCPoxInfoData {
             chainstate,
             tip,
             &burnchain_tip,
+            current_reward_sets,
             reward_cycle_id + 1,
         )
         .unwrap_or(next_threshold_live);
@@ -476,8 +482,19 @@ impl RPCPoxInfoData {
         chainstate: &mut StacksChainState,
         tip: &StacksBlockId,
         burnchain_tip: &crate::chainstate::burn::BlockSnapshot,
+        current_reward_sets: &BTreeMap<u64, CurrentRewardSet>,
         reward_cycle_id: u64,
     ) -> Option<u64> {
+        // Fast-path: use in-memory reward set cache maintained by PeerNetwork.
+        if let Some(threshold) = current_reward_sets
+            .get(&reward_cycle_id)
+            .and_then(|reward_cycle| reward_cycle.reward_set())
+            .and_then(|reward_set| reward_set.pox_ustx_threshold)
+            .and_then(|threshold| u64::try_from(threshold).ok())
+        {
+            return Some(threshold);
+        }
+
         let provider = OnChainRewardSetProvider::new();
 
         // In Nakamoto, the reward set is persisted in chainstate as part of .signers updates.
@@ -563,7 +580,13 @@ impl RPCRequestHandler for RPCPoxInfoRequestHandler {
 
         let pox_info_res =
             node.with_node_state(|network, sortdb, chainstate, _mempool, _rpc_args| {
-                RPCPoxInfoData::from_db(sortdb, chainstate, &tip, network.get_burnchain())
+                RPCPoxInfoData::from_db(
+                    sortdb,
+                    chainstate,
+                    &tip,
+                    network.get_burnchain(),
+                    &network.current_reward_sets,
+                )
             });
 
         let pox_info = match pox_info_res {
