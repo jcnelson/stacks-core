@@ -10866,9 +10866,7 @@ pub mod test {
         ))) = err
         {
             assert_eq!(
-                RuntimeCheckErrorKind::ExpectsRejectable(
-                    "Trait reference unknown: foo".to_string()
-                ),
+                RuntimeCheckErrorKind::Unreachable("Trait reference unknown: foo".to_string()),
                 runtime_check_err
             );
         } else {
@@ -10929,9 +10927,7 @@ pub mod test {
         ))) = err
         {
             assert_eq!(
-                RuntimeCheckErrorKind::ExpectsRejectable(
-                    "Trait reference unknown: foo".to_string()
-                ),
+                RuntimeCheckErrorKind::Unreachable("Trait reference unknown: foo".to_string()),
                 runtime_check_err
             );
         } else {
