@@ -704,7 +704,16 @@ where
             );
         }
 
-        // check root hashes are all the same
+        if marf.borrow_storage_backend().hash_calculation_mode == TrieHashCalculationMode::Deferred
+        {
+            continue;
+        }
+
+        // check root hashes are all the same (only for Immediate mode executions)
+        // NOTE: The walk tests are bootstrapped via `make_node_path()`, which seeds synthetic node hashes
+        // directly into storage (instead of constructing them through the normal MARF
+        // insert flow). This interacts differently with the hash modes, causing the
+        // root hash computation to produce different results in Immediate vs. Deferred modes.
         let curr_root_hashes = marf
             .borrow_storage_backend()
             .read_root_to_block_table()
@@ -891,6 +900,11 @@ fn marf_merkle_verify_backptrs() {
                 continue;
             }
 
+            // check root hashes are all the same (only for Immediate mode executions)
+            // NOTE: This test uses `make_node_path()`, which seeds synthetic node hashes
+            // directly into storage (instead of constructing them through the normal MARF
+            // insert flow). This interacts differently with the hash modes, causing the
+            // root hash computation to produce different results in Immediate vs. Deferred modes.
             let curr_root_hashes = marf
                 .borrow_storage_backend()
                 .read_root_to_block_table()
