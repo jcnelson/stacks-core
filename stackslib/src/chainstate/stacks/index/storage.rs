@@ -3054,8 +3054,9 @@ impl<T: MarfTrieId> TrieStorageConnection<'_, T> {
         let cur_block_id = block_id;
         let mut node_hash_opt = None;
         let mut patches: Vec<(u32, TriePtr, TrieNodePatch)> = vec![];
-        // Read 1 node further than the MAX_PATCH_DEPTH allowed
-        for _ in 0..(1 + MAX_PATCH_DEPTH) {
+        // Read one node beyond `MAX_PATCH_DEPTH` to also read the first non-patched node
+        // if it isn't found earlier.
+        for _ in 0..=MAX_PATCH_DEPTH {
             match self.inner_read_persisted_nodetype(block_id, &ptr, read_hash) {
                 Ok((node, hash)) => {
                     patches.reverse();
