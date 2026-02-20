@@ -76,9 +76,6 @@ fn signer_reevaluates_proposal_with_missing_burn_view() {
         .init();
 
     info!("------------------------- Test Setup -------------------------");
-
-    // Create a multiple miner test with 5 signers
-    // They will be distributed: 5 to miner 1, 0 to miner 2
     let num_signers = 5;
     let signer_test = SignerTest::new(num_signers, vec![]);
     let all_signers = signer_test.signer_test_pks();
