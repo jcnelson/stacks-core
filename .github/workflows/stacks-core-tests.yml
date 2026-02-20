@@ -128,7 +128,6 @@ jobs:
           # fail_ci_if_error: true
           test-name: ${{ github.job }}
           upload-only: true
-          filename: ./contrib/core-contract-tests/lcov.info
 
   # Core contract tests on Clarinet v1
   # Check for false positives/negatives
