@@ -40,7 +40,7 @@ impl fmt::Display for ClarityVersion {
 
 impl ClarityVersion {
     pub const fn latest() -> ClarityVersion {
-        ClarityVersion::Clarity4
+        ClarityVersion::Clarity5
     }
 
     pub const ALL: &'static [ClarityVersion] = &[
@@ -71,6 +71,16 @@ impl ClarityVersion {
             StacksEpochId::Epoch32 => ClarityVersion::Clarity3,
             StacksEpochId::Epoch33 => ClarityVersion::Clarity4,
             StacksEpochId::Epoch34 => ClarityVersion::Clarity5,
+        }
+    }
+
+    pub fn supports_callables(&self) -> bool {
+        match self {
+            ClarityVersion::Clarity1 => false,
+            ClarityVersion::Clarity2
+            | ClarityVersion::Clarity3
+            | ClarityVersion::Clarity4
+            | ClarityVersion::Clarity5 => true,
         }
     }
 
