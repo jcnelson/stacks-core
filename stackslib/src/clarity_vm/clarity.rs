@@ -1,5 +1,5 @@
 // Copyright (C) 2013-2020 Blockstack PBC, a public benefit corporation
-// Copyright (C) 2020 Stacks Open Internet Foundation
+// Copyright (C) 2020-2026 Stacks Open Internet Foundation
 //
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
@@ -1922,6 +1922,32 @@ impl<'a, 'b> ClarityBlockConnection<'a, 'b> {
         })
     }
 
+    pub fn initialize_epoch_3_4(&mut self) -> Result<Vec<StacksTransactionReceipt>, ClarityError> {
+        // use the `using!` statement to ensure that the old cost_tracker is placed
+        //  back in all branches after initialization
+        using!(self.cost_track, "cost tracker", |old_cost_tracker| {
+            // epoch initialization is *free*.
+            // NOTE: this also means that cost functions won't be evaluated.
+            self.cost_track.replace(LimitedCostTracker::new_free());
+            self.epoch = StacksEpochId::Epoch34;
+            self.as_transaction(|tx_conn| {
+                // bump the epoch in the Clarity DB
+                tx_conn
+                    .with_clarity_db(|db| {
+                        db.set_clarity_epoch_version(StacksEpochId::Epoch34)?;
+                        Ok(())
+                    })
+                    .unwrap();
+
+                // require 3.4 rules henceforth in this connection as well
+                tx_conn.epoch = StacksEpochId::Epoch34;
+            });
+
+            info!("Epoch 3.4 initialized");
+            (old_cost_tracker, Ok(vec![]))
+        })
+    }
+
     pub fn start_transaction_processing(&mut self) -> ClarityTransactionConnection<'_, '_> {
         ClarityTransactionConnection::new(
             &mut self.datastore,
@@ -2172,10 +2198,11 @@ impl ClarityTransactionConnection<'_, '_> {
         self.with_abort_callback(
             |vm_env| {
                 vm_env
-                    .execute_in_env(sender.clone(), None, None, |env| {
-                        env.run_as_transaction(|env| {
+                    .execute_in_env(sender.clone(), None, None, |exec_state, invoke_ctx| {
+                        exec_state.run_as_transaction(invoke_ctx, |exec_state, invoke_ctx| {
                             StacksChainState::handle_poison_microblock(
-                                env,
+                                exec_state,
+                                invoke_ctx,
                                 mblock_header_1,
                                 mblock_header_2,
                             )
@@ -2559,7 +2586,7 @@ mod tests {
                     )
                     .unwrap_err()
                 )
-                .contains("ContractAlreadyExists"));
+                .contains("Contract already exists"));
 
                 tx.commit().unwrap();
             }

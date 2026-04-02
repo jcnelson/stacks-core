@@ -850,7 +850,7 @@ impl<'a> ClarityDatabase<'a> {
             .ok_or_else(|| VmInternalError::Expect(
                 "Failed to read non-consensus contract metadata, even though contract exists in MARF."
                 .into()))?;
-        data.canonicalize_types(&self.get_clarity_epoch_version()?);
+        data.canonicalize_types(&self.get_clarity_epoch_version()?)?;
         Ok(data)
     }
 
@@ -1537,8 +1537,10 @@ impl ClarityDatabase<'_> {
     ) -> Result<DataVariableMetadata, VmExecutionError> {
         let key = ClarityDatabase::make_metadata_key(StoreType::VariableMeta, variable_name);
 
-        map_no_contract_as_none(self.fetch_metadata(contract_identifier, &key))?
-            .ok_or(RuntimeCheckErrorKind::NoSuchDataVariable(variable_name.to_string()).into())
+        map_no_contract_as_none(self.fetch_metadata(contract_identifier, &key))?.ok_or(
+            RuntimeCheckErrorKind::Unreachable(format!("No such data variable: {variable_name}"))
+                .into(),
+        )
     }
 
     #[cfg(any(test, feature = "testing"))]
@@ -1574,7 +1576,7 @@ impl ClarityDatabase<'_> {
         {
             return Err(RuntimeCheckErrorKind::TypeValueError(
                 Box::new(variable_descriptor.value_type.clone()),
-                Box::new(value),
+                value.to_error_string(),
             )
             .into());
         }
@@ -1679,7 +1681,7 @@ impl ClarityDatabase<'_> {
         let key = ClarityDatabase::make_metadata_key(StoreType::DataMapMeta, map_name);
 
         map_no_contract_as_none(self.fetch_metadata(contract_identifier, &key))?
-            .ok_or(RuntimeCheckErrorKind::NoSuchMap(map_name.to_string()).into())
+            .ok_or(RuntimeCheckErrorKind::Unreachable(format!("No such map: {map_name}")).into())
     }
 
     pub fn make_key_for_data_map_entry(
@@ -1735,7 +1737,7 @@ impl ClarityDatabase<'_> {
         {
             return Err(RuntimeCheckErrorKind::TypeValueError(
                 Box::new(map_descriptor.key_type.clone()),
-                Box::new(key_value.clone()),
+                key_value.to_error_string(),
             )
             .into());
         }
@@ -1766,7 +1768,7 @@ impl ClarityDatabase<'_> {
         {
             return Err(RuntimeCheckErrorKind::TypeValueError(
                 Box::new(map_descriptor.key_type.clone()),
-                Box::new(key_value.clone()),
+                key_value.to_error_string(),
             )
             .into());
         }
@@ -1911,7 +1913,7 @@ impl ClarityDatabase<'_> {
         {
             return Err(RuntimeCheckErrorKind::TypeValueError(
                 Box::new(map_descriptor.key_type.clone()),
-                Box::new(key_value),
+                key_value.to_error_string(),
             )
             .into());
         }
@@ -1921,7 +1923,7 @@ impl ClarityDatabase<'_> {
         {
             return Err(RuntimeCheckErrorKind::TypeValueError(
                 Box::new(map_descriptor.value_type.clone()),
-                Box::new(value),
+                value.to_error_string(),
             )
             .into());
         }
@@ -1972,7 +1974,7 @@ impl ClarityDatabase<'_> {
         {
             return Err(RuntimeCheckErrorKind::TypeValueError(
                 Box::new(map_descriptor.key_type.clone()),
-                Box::new(key_value.clone()),
+                key_value.to_error_string(),
             )
             .into());
         }
@@ -2043,7 +2045,7 @@ impl ClarityDatabase<'_> {
         let key = ClarityDatabase::make_metadata_key(StoreType::FungibleTokenMeta, token_name);
 
         map_no_contract_as_none(self.fetch_metadata(contract_identifier, &key))?
-            .ok_or(RuntimeCheckErrorKind::NoSuchFT(token_name.to_string()).into())
+            .ok_or(RuntimeCheckErrorKind::Unreachable(format!("No such FT: {token_name}")).into())
     }
 
     pub fn create_non_fungible_token(
@@ -2069,7 +2071,7 @@ impl ClarityDatabase<'_> {
         let key = ClarityDatabase::make_metadata_key(StoreType::NonFungibleTokenMeta, token_name);
 
         map_no_contract_as_none(self.fetch_metadata(contract_identifier, &key))?
-            .ok_or(RuntimeCheckErrorKind::NoSuchNFT(token_name.to_string()).into())
+            .ok_or(RuntimeCheckErrorKind::Unreachable(format!("No such NFT: {token_name}")).into())
     }
 
     pub fn checked_increase_token_supply(
@@ -2196,7 +2198,7 @@ impl ClarityDatabase<'_> {
         if !key_type.admits(&self.get_clarity_epoch_version()?, asset)? {
             return Err(RuntimeCheckErrorKind::TypeValueError(
                 Box::new(key_type.clone()),
-                Box::new(asset.clone()),
+                asset.to_error_string(),
             )
             .into());
         }
@@ -2256,7 +2258,7 @@ impl ClarityDatabase<'_> {
         if !key_type.admits(&self.get_clarity_epoch_version()?, asset)? {
             return Err(RuntimeCheckErrorKind::TypeValueError(
                 Box::new(key_type.clone()),
-                Box::new(asset.clone()),
+                asset.to_error_string(),
             )
             .into());
         }
@@ -2287,7 +2289,7 @@ impl ClarityDatabase<'_> {
         if !key_type.admits(&self.get_clarity_epoch_version()?, asset)? {
             return Err(RuntimeCheckErrorKind::TypeValueError(
                 Box::new(key_type.clone()),
-                Box::new(asset.clone()),
+                asset.to_error_string(),
             )
             .into());
         }

@@ -68,8 +68,7 @@ fn variant_coverage_report(variant: StaticCheckErrorKind) {
         TypeSignatureTooDeep => Tested(vec![static_check_error_type_signature_too_deep]),
         ExpectedName => Tested(vec![static_check_error_expected_name]),
         SupertypeTooLarge => Tested(vec![static_check_error_supertype_too_large]),
-        ExpectsAcceptable(_) => Unreachable_ExpectLike,
-        ExpectsRejectable(_) => Unreachable_ExpectLike,
+        Unreachable(_) => Unreachable_ExpectLike,
         BadMatchOptionSyntax(static_check_error_kind) => {
             Tested(vec![static_check_error_bad_match_option_syntax])
         }
@@ -145,7 +144,7 @@ fn variant_coverage_report(variant: StaticCheckErrorKind) {
         MaxLengthOverflow => Unreachable_ExpectLike,  // Should exceed u32 elements in memory.
         BadLetSyntax => Tested(vec![static_check_error_bad_let_syntax]),
         BadSyntaxBinding(syntax_binding_error) => Tested(vec![static_check_error_bad_syntax_binding]),
-        MaxContextDepthReached => Unreachable_Functionally("Before type checking runs, the parser enforces an AST nesting limit of (5 + 64). Any contract exceeding depth 69 fails with `ParseErrorKind::ExpressionStackDepthTooDeep`"),
+        MaxContextDepthReached => Unreachable_Functionally("Before type checking runs, the parser enforces an AST nesting limit of (5 + max call stack depth). Any contract exceeding that depth fails with `ParseErrorKind::ExpressionStackDepthTooDeep`"),
         UndefinedVariable(_) => Tested(vec![static_check_error_undefined_variable]),
         RequiresAtLeastArguments(_, _) => Tested(vec![static_check_error_requires_at_least_arguments]),
         RequiresAtMostArguments(_, _) => Tested(vec![static_check_error_requires_at_most_arguments]),
@@ -169,6 +168,7 @@ fn variant_coverage_report(variant: StaticCheckErrorKind) {
         TraitTooManyMethods(_, _) => Tested(vec![static_check_error_trait_too_many_methods]),
         WriteAttemptedInReadOnly => Tested(vec![static_check_error_write_attempted_in_read_only]),
         AtBlockClosureMustBeReadOnly => Tested(vec![static_check_error_at_block_closure_must_be_read_only]),
+        AtBlockUnavailable => Tested(vec![static_check_error_at_block_unavailable]),
         ExpectedListOfAllowances(_, _) => Tested(vec![static_check_error_expected_list_of_allowances]),
         AllowanceExprNotAllowed => Tested(vec![static_check_error_allowance_expr_not_allowed]),
         ExpectedAllowanceExpr(_) => Tested(vec![static_check_error_expected_allowance_expr]),
@@ -504,7 +504,7 @@ fn static_check_error_type_signature_too_deep() {
 
 /// StaticCheckErrorKind: [`StaticCheckErrorKind::SupertypeTooLarge`]
 /// Caused by: combining tuples with `buff 600000` and `buff 10` forces a supertype beyond the size limit.
-/// Outcome: block rejected.
+/// Outcome: block rejected pre-3.4, accepted 3.4+.
 #[test]
 fn static_check_error_supertype_too_large() {
     contract_deploy_consensus_test!(
@@ -1100,7 +1100,11 @@ fn static_check_error_get_block_info_expect_property_name() {
     contract_deploy_consensus_test!(
         contract_name: "info-exp-prop-name",
         contract_code: "(get-block-info? u1 u0)",
-        exclude_clarity_versions: &[ClarityVersion::Clarity3, ClarityVersion::Clarity4],
+        exclude_clarity_versions: &[
+            ClarityVersion::Clarity3,
+            ClarityVersion::Clarity4,
+            ClarityVersion::Clarity5
+        ],
     );
 }
 
@@ -1214,8 +1218,13 @@ fn static_check_error_write_attempted_in_read_only() {
 /// StaticCheckErrorKind: [`StaticCheckErrorKind::AtBlockClosureMustBeReadOnly`]
 /// Caused by: `at-block` closure must be read-only but contains write operations.
 /// Outcome: block accepted.
+/// Note: In Clarity5+, `at-block` is removed from the language, so this same
+///       contract fails earlier with `UnknownFunction("at-block")`.
 #[test]
 fn static_check_error_at_block_closure_must_be_read_only() {
+    let mut exclude_clarity_versions = ClarityVersion::ALL.to_vec();
+    exclude_clarity_versions.retain(|version| *version > ClarityVersion::Clarity4);
+
     contract_deploy_consensus_test!(
         contract_name: "closure-must-be-ro",
         contract_code: "
@@ -1223,6 +1232,27 @@ fn static_check_error_at_block_closure_must_be_read_only() {
         (define-private (foo-bar)
             (at-block (sha256 0)
                (var-set foo 0)))",
+        exclude_clarity_versions: &exclude_clarity_versions,
+    );
+}
+
+/// StaticCheckErrorKind: [`StaticCheckErrorKind::AtBlockUnavailable`]
+/// Caused by: using `at-block` in Epoch 3.4+, where the built-in is disabled.
+/// Outcome: block accepted.
+/// Note: In Clarity5+, `at-block` is removed from the language surface, so this same
+///       contract fails earlier with `UnknownFunction("at-block")`.
+#[test]
+fn static_check_error_at_block_unavailable() {
+    let mut exclude_clarity_versions = ClarityVersion::ALL.to_vec();
+    exclude_clarity_versions.retain(|version| *version > ClarityVersion::Clarity4);
+    contract_deploy_consensus_test!(
+        contract_name: "at-block-unavailable",
+        contract_code: "
+        (define-public (trigger-error)
+            (ok (at-block 0x0101010101010101010101010101010101010101010101010101010101010101
+                    u1)))",
+        deploy_epochs: &StacksEpochId::since(StacksEpochId::Epoch34),
+        exclude_clarity_versions: &exclude_clarity_versions,
     );
 }
 

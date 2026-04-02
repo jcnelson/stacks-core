@@ -65,11 +65,10 @@ fn test_simple_buff_to_int_le() {
             Box::new(SequenceType(BufferType(
                 BufferLength::try_from(16_u32).unwrap()
             ))),
-            Box::new(Value::Sequence(SequenceData::String(CharType::ASCII(
-                ASCIIData {
-                    data: "wrong-type".as_bytes().to_vec()
-                }
-            ))))
+            Value::Sequence(SequenceData::String(CharType::ASCII(ASCIIData {
+                data: "wrong-type".as_bytes().to_vec()
+            })))
+            .to_error_string()
         )
         .into()
     );
@@ -82,9 +81,10 @@ fn test_simple_buff_to_int_le() {
             Box::new(SequenceType(BufferType(
                 BufferLength::try_from(16_u32).unwrap()
             ))),
-            Box::new(Value::Sequence(SequenceData::Buffer(BuffData {
+            Value::Sequence(SequenceData::Buffer(BuffData {
                 data: vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 0]
-            })))
+            }))
+            .to_error_string()
         )
         .into()
     );
@@ -123,11 +123,10 @@ fn test_simple_buff_to_uint_le() {
             Box::new(SequenceType(BufferType(
                 BufferLength::try_from(16_u32).unwrap()
             ))),
-            Box::new(Value::Sequence(SequenceData::String(CharType::ASCII(
-                ASCIIData {
-                    data: "wrong-type".as_bytes().to_vec()
-                }
-            ))))
+            Value::Sequence(SequenceData::String(CharType::ASCII(ASCIIData {
+                data: "wrong-type".as_bytes().to_vec()
+            })))
+            .to_error_string()
         )
         .into()
     );
@@ -140,9 +139,10 @@ fn test_simple_buff_to_uint_le() {
             Box::new(SequenceType(BufferType(
                 BufferLength::try_from(16_u32).unwrap()
             ))),
-            Box::new(Value::Sequence(SequenceData::Buffer(BuffData {
+            Value::Sequence(SequenceData::Buffer(BuffData {
                 data: vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 0]
-            })))
+            }))
+            .to_error_string()
         )
         .into()
     );
@@ -181,11 +181,10 @@ fn test_simple_buff_to_int_be() {
             Box::new(SequenceType(BufferType(
                 BufferLength::try_from(16_u32).unwrap()
             ))),
-            Box::new(Value::Sequence(SequenceData::String(CharType::ASCII(
-                ASCIIData {
-                    data: "wrong-type".as_bytes().to_vec()
-                }
-            ))))
+            Value::Sequence(SequenceData::String(CharType::ASCII(ASCIIData {
+                data: "wrong-type".as_bytes().to_vec()
+            })))
+            .to_error_string()
         )
         .into()
     );
@@ -198,9 +197,10 @@ fn test_simple_buff_to_int_be() {
             Box::new(SequenceType(BufferType(
                 BufferLength::try_from(16_u32).unwrap()
             ))),
-            Box::new(Value::Sequence(SequenceData::Buffer(BuffData {
+            Value::Sequence(SequenceData::Buffer(BuffData {
                 data: vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 0]
-            })))
+            }))
+            .to_error_string()
         )
         .into()
     );
@@ -239,11 +239,10 @@ fn test_simple_buff_to_uint_be() {
             Box::new(SequenceType(BufferType(
                 BufferLength::try_from(16_u32).unwrap()
             ))),
-            Box::new(Value::Sequence(SequenceData::String(CharType::ASCII(
-                ASCIIData {
-                    data: "wrong-type".as_bytes().to_vec()
-                }
-            ))))
+            Value::Sequence(SequenceData::String(CharType::ASCII(ASCIIData {
+                data: "wrong-type".as_bytes().to_vec()
+            })))
+            .to_error_string()
         )
         .into()
     );
@@ -256,9 +255,10 @@ fn test_simple_buff_to_uint_be() {
             Box::new(SequenceType(BufferType(
                 BufferLength::try_from(16_u32).unwrap()
             ))),
-            Box::new(Value::Sequence(SequenceData::Buffer(BuffData {
+            Value::Sequence(SequenceData::Buffer(BuffData {
                 data: vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 0]
-            })))
+            }))
+            .to_error_string()
         )
         .into()
     );
@@ -323,7 +323,7 @@ fn test_simple_string_to_int() {
                 TypeSignature::STRING_ASCII_MAX,
                 TypeSignature::STRING_UTF8_MAX,
             ],
-            Box::new(Value::Int(1))
+            Value::Int(1).to_error_string()
         )
         .into()
     );
@@ -388,7 +388,7 @@ fn test_simple_string_to_uint() {
                 TypeSignature::STRING_ASCII_MAX,
                 TypeSignature::STRING_UTF8_MAX,
             ],
-            Box::new(Value::Int(1))
+            Value::Int(1).to_error_string()
         )
         .into()
     );
@@ -419,11 +419,10 @@ fn test_simple_int_to_ascii() {
         execute_v2(wrong_type_error_test).unwrap_err(),
         RuntimeCheckErrorKind::UnionTypeValueError(
             vec![TypeSignature::IntType, TypeSignature::UIntType],
-            Box::new(Value::Sequence(SequenceData::String(CharType::ASCII(
-                ASCIIData {
-                    data: "1".as_bytes().to_vec()
-                }
-            ))))
+            Value::Sequence(SequenceData::String(CharType::ASCII(ASCIIData {
+                data: "1".as_bytes().to_vec()
+            })))
+            .to_error_string()
         )
         .into()
     );
@@ -454,11 +453,10 @@ fn test_simple_int_to_utf8() {
         execute_v2(wrong_type_error_test).unwrap_err(),
         RuntimeCheckErrorKind::UnionTypeValueError(
             vec![TypeSignature::IntType, TypeSignature::UIntType],
-            Box::new(Value::Sequence(SequenceData::String(CharType::ASCII(
-                ASCIIData {
-                    data: "1".as_bytes().to_vec()
-                }
-            ))))
+            Value::Sequence(SequenceData::String(CharType::ASCII(ASCIIData {
+                data: "1".as_bytes().to_vec()
+            })))
+            .to_error_string()
         )
         .into()
     );
@@ -596,8 +594,37 @@ fn test_to_ascii(version: ClarityVersion, epoch: StacksEpochId) {
     assert!(result.is_err());
 }
 
+#[apply(test_clarity_versions)]
+fn test_from_consensus_buff_unexpected_serialization_epoch_gate(
+    version: ClarityVersion,
+    epoch: StacksEpochId,
+) {
+    // `from-consensus-buff?` is only available in Clarity 2 and later
+    if version < ClarityVersion::Clarity2 {
+        return;
+    }
+
+    let invalid_principal = "0x05200000000000000000000000000000000000000000";
+    let program = format!("(from-consensus-buff? principal {invalid_principal})");
+
+    let result = execute_with_parameters(&program, version, epoch, false);
+
+    if epoch.treats_unexpected_serialization_as_none() {
+        let value = result
+            .expect("Epoch34 should allow from-consensus-buff? to succeed")
+            .expect("from-consensus-buff? should return a value");
+        assert_eq!(value, Value::none());
+        return;
+    }
+    let err = result.expect_err("Epoch33 should treat unexpected serialization as an error");
+    assert_eq!(
+        err,
+        RuntimeCheckErrorKind::Unreachable("UnexpectedSerialization".into()).into()
+    );
+}
+
 fn evaluate_to_ascii(snippet: &str) -> Value {
-    execute_versioned(snippet, ClarityVersion::Clarity4)
+    execute_versioned(snippet, ClarityVersion::latest())
         .unwrap_or_else(|e| panic!("Execution failed for snippet `{snippet}`: {e:?}"))
         .unwrap_or_else(|| panic!("Execution returned no value for snippet `{snippet}`"))
 }
@@ -690,7 +717,7 @@ proptest! {
         let evaluation = evaluate_to_ascii(&snippet);
 
         let ascii_snippet = &utf8_string[1..]; // Remove the u prefix
-        let expected_inner = execute_versioned(ascii_snippet, ClarityVersion::Clarity4)
+        let expected_inner = execute_versioned(ascii_snippet, ClarityVersion::latest())
             .unwrap_or_else(|e| panic!("Execution failed for `{ascii_snippet}`: {e:?}"))
             .unwrap_or_else(|| panic!("Execution returned no value for `{ascii_snippet}`"));
         let expected = Value::okay(expected_inner).expect("response wrapping should succeed");
@@ -703,7 +730,7 @@ proptest! {
         let snippet = format!("(to-ascii? {utf8_string})");
         let evaluation = evaluate_to_ascii(&snippet);
 
-        let literal_value = execute_versioned(&utf8_string, ClarityVersion::Clarity4)
+        let literal_value = execute_versioned(&utf8_string, ClarityVersion::latest())
             .unwrap_or_else(|e| panic!("Execution failed for literal `{utf8_string}`: {e:?}"))
             .unwrap_or_else(|| panic!("Execution returned no value for literal `{utf8_string}`"));
 

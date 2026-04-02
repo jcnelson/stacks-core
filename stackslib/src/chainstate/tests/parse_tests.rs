@@ -18,10 +18,10 @@
 use std::collections::HashMap;
 
 use clarity::vm::ast::errors::ParseErrorKind;
-use clarity::vm::ast::parser::v2::{MAX_CONTRACT_NAME_LEN, MAX_NESTING_DEPTH, MAX_STRING_LEN};
-use clarity::vm::ast::stack_depth_checker::AST_CALL_STACK_DEPTH_BUFFER;
+use clarity::vm::ast::parser::v2::{MAX_CONTRACT_NAME_LEN, MAX_STRING_LEN};
+use clarity::vm::ast::stack_depth_checker::StackDepthLimits;
 use clarity::vm::types::MAX_VALUE_SIZE;
-use clarity::vm::MAX_CALL_STACK_DEPTH;
+use stacks_common::types::StacksEpochId;
 
 use crate::chainstate::tests::consensus::{
     clarity_versions_for_epoch, contract_deploy_consensus_test, ConsensusTest, ConsensusUtils,
@@ -64,12 +64,12 @@ fn variant_coverage_report(variant: ParseErrorKind) {
         ExecutionTimeExpired => Unreachable_NotUsed,
 
         TooManyExpressions => Unreachable_ExpectLike,
-        ExpressionStackDepthTooDeep => Tested(vec![
+        ExpressionStackDepthTooDeep { .. } => Tested(vec![
             test_stack_depth_too_deep_case_2_list_only_parsing,
             test_stack_depth_too_deep_case_2_list_only_parsing,
             test_stack_depth_too_deep_case_3_list_only_checker,
         ]),
-        VaryExpressionStackDepthTooDeep => Tested(vec![test_vary_stack_depth_too_deep_checker]),
+        VaryExpressionStackDepthTooDeep { .. } => Tested(vec![test_vary_stack_depth_too_deep_checker]),
         FailedParsingIntValue(_) => Tested(vec![test_failed_parsing_int_value]),
         CircularReference(_) => Tested(vec![test_circular_reference]),
         NameAlreadyUsed(_) => Tested(vec![test_named_already_used]),
@@ -133,7 +133,7 @@ fn variant_coverage_report(variant: ParseErrorKind) {
 fn test_cost_balance_exceeded() {
     const RUNTIME_LIMIT: u64 = BLOCK_LIMIT_MAINNET_21.runtime;
     // Arbitrary parameters determined through empirical testing
-    const CONTRACT_FUNC_INVOCATIONS: u64 = 29_022;
+    const CONTRACT_FUNC_INVOCATIONS: u64 = 50_022;
     const CALL_RUNTIME_COST: u64 = 249_996_284;
     const CALLS_NEEDED: u64 = RUNTIME_LIMIT / CALL_RUNTIME_COST - 1;
 
@@ -217,14 +217,83 @@ fn test_cost_balance_exceeded() {
 
 /// ParserError: [`ParseErrorKind::ExpressionStackDepthTooDeep`]
 /// Caused by: nested contract body exceeding stack depth limit on parsing tuples
-/// Outcome: block rejected
+/// Outcome: block rejected pre-3.4, accepted 3.4+.
 #[test]
 fn test_stack_depth_too_deep_case_1_tuple_only_parsing() {
     contract_deploy_consensus_test!(
         contract_name: "my-contract",
         contract_code: &{
             // In parse v2, open brace '{' have a stack count of 2.
-            let count = MAX_NESTING_DEPTH / 2 + 1;
+            let depth = StackDepthLimits::for_epoch(StacksEpochId::Epoch33).max_nesting_depth();
+            let count = depth.div_ceil(2) + 1;
+            let body_start = "{ a : ".repeat(count as usize);
+            let body_end = "} ".repeat(count as usize);
+            format!("{body_start}u1 {body_end}")
+        },
+    );
+}
+
+/// ParserError: [`ParseErrorKind::ExpressionStackDepthTooDeep`]
+/// Caused by: nested contract body exceeding stack depth limit on parsing lists
+/// Outcome: block rejected pre-3.4, accepted 3.4+.
+#[test]
+fn test_stack_depth_too_deep_case_2_list_only_parsing() {
+    contract_deploy_consensus_test!(
+        contract_name: "my-contract",
+        contract_code: &{
+            // In parse v2, open parenthesis '(' have a stack count of 1.
+            let count = StackDepthLimits::for_epoch(StacksEpochId::Epoch33).max_nesting_depth() + 1;
+            let body_start = "(list ".repeat(count as usize);
+            let body_end = ")".repeat(count as usize);
+            format!("{body_start}u1 {body_end}")
+        },
+    );
+}
+
+/// ParserError: [`ParseErrorKind::ExpressionStackDepthTooDeep`]
+/// Caused by: nested contract body exceeding stack depth limit on checking lists ast
+/// Outcome: block rejected pre-3.4, accepted 3.4+.
+#[test]
+fn test_stack_depth_too_deep_case_3_list_only_checker() {
+    contract_deploy_consensus_test!(
+        contract_name: "my-contract",
+        contract_code: &{
+            // In parse v2, open parenthesis '(' have a stack count of 1.
+            let count = StackDepthLimits::for_epoch(StacksEpochId::Epoch33).max_nesting_depth();
+            let body_start = "(list ".repeat(count as usize);
+            let body_end = ")".repeat(count as usize);
+            format!("{body_start}u1 {body_end}")
+        },
+    );
+}
+
+/// ParserError: [`ParseErrorKind::VaryExpressionStackDepthTooDeep`]
+/// Caused by: nested contract body exceeding stack depth limit on checking vary list/tuple ast
+/// Outcome: block rejected pre-3.4, accepted 3.4+.
+#[test]
+fn test_vary_stack_depth_too_deep_checker() {
+    contract_deploy_consensus_test!(
+        contract_name: "my-contract",
+        contract_code: &{
+            let count = StackDepthLimits::for_epoch(StacksEpochId::Epoch33).max_nesting_depth() - 1;
+            let body_start = "(list ".repeat(count as usize);
+            let body_end = ")".repeat(count as usize);
+            format!("{{ a: {body_start}u1 {body_end} }}")
+        },
+    );
+}
+
+/// ParserError: [`ParseErrorKind::ExpressionStackDepthTooDeep`]
+/// Caused by: nested contract body exceeding stack depth limit on parsing tuples
+/// Outcome: block rejected
+#[test]
+fn test_stack_depth_too_deep_case_1_tuple_only_parsing_latest_limit() {
+    contract_deploy_consensus_test!(
+        contract_name: "my-contract",
+        contract_code: &{
+            // In parse v2, open brace '{' have a stack count of 2.
+            let depth = StackDepthLimits::for_epoch(StacksEpochId::latest()).max_nesting_depth();
+            let count = depth.div_ceil(2) + 1;
             let body_start = "{ a : ".repeat(count as usize);
             let body_end = "} ".repeat(count as usize);
             format!("{body_start}u1 {body_end}")
@@ -236,12 +305,12 @@ fn test_stack_depth_too_deep_case_1_tuple_only_parsing() {
 /// Caused by: nested contract body exceeding stack depth limit on parsing lists
 /// Outcome: block rejected
 #[test]
-fn test_stack_depth_too_deep_case_2_list_only_parsing() {
+fn test_stack_depth_too_deep_case_2_list_only_parsing_latest_limit() {
     contract_deploy_consensus_test!(
         contract_name: "my-contract",
         contract_code: &{
             // In parse v2, open parenthesis '(' have a stack count of 1.
-            let count = MAX_NESTING_DEPTH;
+            let count = StackDepthLimits::for_epoch(StacksEpochId::latest()).max_nesting_depth() + 1;
             let body_start = "(list ".repeat(count as usize);
             let body_end = ")".repeat(count as usize);
             format!("{body_start}u1 {body_end}")
@@ -253,12 +322,12 @@ fn test_stack_depth_too_deep_case_2_list_only_parsing() {
 /// Caused by: nested contract body exceeding stack depth limit on checking lists ast
 /// Outcome: block rejected
 #[test]
-fn test_stack_depth_too_deep_case_3_list_only_checker() {
+fn test_stack_depth_too_deep_case_3_list_only_checker_latest_limit() {
     contract_deploy_consensus_test!(
         contract_name: "my-contract",
         contract_code: &{
             // In parse v2, open parenthesis '(' have a stack count of 1.
-            let count = AST_CALL_STACK_DEPTH_BUFFER + MAX_CALL_STACK_DEPTH as u64;
+            let count = StackDepthLimits::for_epoch(StacksEpochId::latest()).max_nesting_depth();
             let body_start = "(list ".repeat(count as usize);
             let body_end = ")".repeat(count as usize);
             format!("{body_start}u1 {body_end}")
@@ -270,11 +339,11 @@ fn test_stack_depth_too_deep_case_3_list_only_checker() {
 /// Caused by: nested contract body exceeding stack depth limit on checking vary list/tuple ast
 /// Outcome: block rejected
 #[test]
-fn test_vary_stack_depth_too_deep_checker() {
+fn test_vary_stack_depth_too_deep_checker_latest_limit() {
     contract_deploy_consensus_test!(
         contract_name: "my-contract",
         contract_code: &{
-            let count = AST_CALL_STACK_DEPTH_BUFFER + (MAX_CALL_STACK_DEPTH as u64) - 1;
+            let count = StackDepthLimits::for_epoch(StacksEpochId::latest()).max_nesting_depth() - 1;
             let body_start = "(list ".repeat(count as usize);
             let body_end = ")".repeat(count as usize);
             format!("{{ a: {body_start}u1 {body_end} }}")

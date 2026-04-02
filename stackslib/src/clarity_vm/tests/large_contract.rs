@@ -1,5 +1,5 @@
 // Copyright (C) 2013-2020 Blockstack PBC, a public benefit corporation
-// Copyright (C) 2020 Stacks Open Internet Foundation
+// Copyright (C) 2020-2026 Stacks Open Internet Foundation
 //
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
@@ -17,11 +17,12 @@
 use std::collections::HashMap;
 
 use clarity::util::get_epoch_time_secs;
-use clarity::vm::ast::stack_depth_checker::AST_CALL_STACK_DEPTH_BUFFER;
+use clarity::vm::ast::errors::ParseErrorKind;
+use clarity::vm::ast::stack_depth_checker::StackDepthLimits;
 use clarity::vm::clarity::{ClarityConnection, TransactionConnection};
 use clarity::vm::contexts::OwnedEnvironment;
 use clarity::vm::database::HeadersDB;
-use clarity::vm::errors::VmExecutionError;
+use clarity::vm::errors::{StaticCheckErrorKind, VmExecutionError};
 use clarity::vm::test_util::*;
 use clarity::vm::tests::{test_clarity_versions, BurnStateDB};
 use clarity::vm::types::{
@@ -29,7 +30,7 @@ use clarity::vm::types::{
     Value,
 };
 use clarity::vm::version::ClarityVersion;
-use clarity::vm::{ast, ContractContext, MAX_CALL_STACK_DEPTH};
+use clarity::vm::{ast, ContractContext};
 #[cfg(test)]
 use rstest::rstest;
 #[cfg(test)]
@@ -195,7 +196,7 @@ fn test_simple_token_system(#[case] version: ClarityVersion, #[case] epoch: Stac
                 )
                 .unwrap();
             }
-            StacksEpochId::Epoch33 => {
+            StacksEpochId::Epoch33 | StacksEpochId::Epoch34 => {
                 let (ast, _analysis) = tx
                     .analyze_smart_contract(
                         &boot_code_id("costs-4", false),
@@ -560,156 +561,179 @@ fn inner_test_simple_naming_system(owned_env: &mut OwnedEnvironment, version: Cl
     );
 
     {
-        let mut env = owned_env.get_exec_environment(None, None, &placeholder_context);
+        let (mut exec_state, invoke_ctx) =
+            owned_env.get_exec_environment(None, None, &placeholder_context);
 
         let contract_identifier = QualifiedContractIdentifier::local("tokens").unwrap();
-        env.initialize_contract(contract_identifier, tokens_contract)
+        exec_state
+            .initialize_contract(&invoke_ctx, contract_identifier, tokens_contract)
             .unwrap();
 
         let contract_identifier = QualifiedContractIdentifier::local("names").unwrap();
-        env.initialize_contract(contract_identifier, names_contract)
+        exec_state
+            .initialize_contract(&invoke_ctx, contract_identifier, names_contract)
             .unwrap();
     }
 
     {
-        let mut env = owned_env.get_exec_environment(
+        let (mut exec_state, invoke_ctx) = owned_env.get_exec_environment(
             Some(p2.clone().expect_principal().unwrap()),
             None,
             &placeholder_context,
         );
 
         assert!(is_err_code_i128(
-            &env.execute_contract(
-                &QualifiedContractIdentifier::local("names").unwrap(),
-                "preorder",
-                &symbols_from_values(vec![name_hash_expensive_0.clone(), Value::UInt(1000)]),
-                false
-            )
-            .unwrap(),
+            &exec_state
+                .execute_contract(
+                    &invoke_ctx,
+                    &QualifiedContractIdentifier::local("names").unwrap(),
+                    "preorder",
+                    &symbols_from_values(vec![name_hash_expensive_0.clone(), Value::UInt(1000)]),
+                    false
+                )
+                .unwrap(),
             1
         ));
     }
 
     {
-        let mut env = owned_env.get_exec_environment(
+        let (mut exec_state, invoke_ctx) = owned_env.get_exec_environment(
             Some(p1.clone().expect_principal().unwrap()),
             None,
             &placeholder_context,
         );
         assert!(is_committed(
-            &env.execute_contract(
-                &QualifiedContractIdentifier::local("names").unwrap(),
-                "preorder",
-                &symbols_from_values(vec![name_hash_expensive_0.clone(), Value::UInt(1000)]),
-                false
-            )
-            .unwrap()
+            &exec_state
+                .execute_contract(
+                    &invoke_ctx,
+                    &QualifiedContractIdentifier::local("names").unwrap(),
+                    "preorder",
+                    &symbols_from_values(vec![name_hash_expensive_0.clone(), Value::UInt(1000)]),
+                    false
+                )
+                .unwrap()
         ));
         assert!(is_err_code_i128(
-            &env.execute_contract(
-                &QualifiedContractIdentifier::local("names").unwrap(),
-                "preorder",
-                &symbols_from_values(vec![name_hash_expensive_0, Value::UInt(1000)]),
-                false
-            )
-            .unwrap(),
+            &exec_state
+                .execute_contract(
+                    &invoke_ctx,
+                    &QualifiedContractIdentifier::local("names").unwrap(),
+                    "preorder",
+                    &symbols_from_values(vec![name_hash_expensive_0, Value::UInt(1000)]),
+                    false
+                )
+                .unwrap(),
             2
         ));
     }
 
     {
         // shouldn't be able to register a name you didn't preorder!
-        let mut env = owned_env.get_exec_environment(
+        let (mut exec_state, invoke_ctx) = owned_env.get_exec_environment(
             Some(p2.clone().expect_principal().unwrap()),
             None,
             &placeholder_context,
         );
         assert!(is_err_code_i128(
-            &env.execute_contract(
-                &QualifiedContractIdentifier::local("names").unwrap(),
-                "register",
-                &symbols_from_values(vec![p2.clone(), Value::Int(1), Value::Int(0)]),
-                false
-            )
-            .unwrap(),
+            &exec_state
+                .execute_contract(
+                    &invoke_ctx,
+                    &QualifiedContractIdentifier::local("names").unwrap(),
+                    "register",
+                    &symbols_from_values(vec![p2.clone(), Value::Int(1), Value::Int(0)]),
+                    false
+                )
+                .unwrap(),
             4
         ));
     }
 
     {
         // should work!
-        let mut env = owned_env.get_exec_environment(
+        let (mut exec_state, invoke_ctx) = owned_env.get_exec_environment(
             Some(p1.expect_principal().unwrap()),
             None,
             &placeholder_context,
         );
         assert!(is_committed(
-            &env.execute_contract(
-                &QualifiedContractIdentifier::local("names").unwrap(),
-                "register",
-                &symbols_from_values(vec![p2.clone(), Value::Int(1), Value::Int(0)]),
-                false
-            )
-            .unwrap()
+            &exec_state
+                .execute_contract(
+                    &invoke_ctx,
+                    &QualifiedContractIdentifier::local("names").unwrap(),
+                    "register",
+                    &symbols_from_values(vec![p2.clone(), Value::Int(1), Value::Int(0)]),
+                    false
+                )
+                .unwrap()
         ));
     }
 
     {
         // try to underpay!
-        let mut env = owned_env.get_exec_environment(
+        let (mut exec_state, invoke_ctx) = owned_env.get_exec_environment(
             Some(p2.clone().expect_principal().unwrap()),
             None,
             &placeholder_context,
         );
         assert!(is_committed(
-            &env.execute_contract(
-                &QualifiedContractIdentifier::local("names").unwrap(),
-                "preorder",
-                &symbols_from_values(vec![name_hash_expensive_1, Value::UInt(100)]),
-                false
-            )
-            .unwrap()
+            &exec_state
+                .execute_contract(
+                    &invoke_ctx,
+                    &QualifiedContractIdentifier::local("names").unwrap(),
+                    "preorder",
+                    &symbols_from_values(vec![name_hash_expensive_1, Value::UInt(100)]),
+                    false
+                )
+                .unwrap()
         ));
         assert!(is_err_code_i128(
-            &env.execute_contract(
-                &QualifiedContractIdentifier::local("names").unwrap(),
-                "register",
-                &symbols_from_values(vec![p2.clone(), Value::Int(2), Value::Int(0)]),
-                false
-            )
-            .unwrap(),
+            &exec_state
+                .execute_contract(
+                    &invoke_ctx,
+                    &QualifiedContractIdentifier::local("names").unwrap(),
+                    "register",
+                    &symbols_from_values(vec![p2.clone(), Value::Int(2), Value::Int(0)]),
+                    false
+                )
+                .unwrap(),
             4
         ));
 
         // register a cheap name!
         assert!(is_committed(
-            &env.execute_contract(
-                &QualifiedContractIdentifier::local("names").unwrap(),
-                "preorder",
-                &symbols_from_values(vec![name_hash_cheap_0, Value::UInt(100)]),
-                false
-            )
-            .unwrap()
+            &exec_state
+                .execute_contract(
+                    &invoke_ctx,
+                    &QualifiedContractIdentifier::local("names").unwrap(),
+                    "preorder",
+                    &symbols_from_values(vec![name_hash_cheap_0, Value::UInt(100)]),
+                    false
+                )
+                .unwrap()
         ));
         assert!(is_committed(
-            &env.execute_contract(
-                &QualifiedContractIdentifier::local("names").unwrap(),
-                "register",
-                &symbols_from_values(vec![p2.clone(), Value::Int(100001), Value::Int(0)]),
-                false
-            )
-            .unwrap()
+            &exec_state
+                .execute_contract(
+                    &invoke_ctx,
+                    &QualifiedContractIdentifier::local("names").unwrap(),
+                    "register",
+                    &symbols_from_values(vec![p2.clone(), Value::Int(100001), Value::Int(0)]),
+                    false
+                )
+                .unwrap()
         ));
 
         // preorder must exist!
         assert!(is_err_code_i128(
-            &env.execute_contract(
-                &QualifiedContractIdentifier::local("names").unwrap(),
-                "register",
-                &symbols_from_values(vec![p2, Value::Int(100001), Value::Int(0)]),
-                false
-            )
-            .unwrap(),
+            &exec_state
+                .execute_contract(
+                    &invoke_ctx,
+                    &QualifiedContractIdentifier::local("names").unwrap(),
+                    "register",
+                    &symbols_from_values(vec![p2, Value::Int(100001), Value::Int(0)]),
+                    false
+                )
+                .unwrap(),
             5
         ));
     }
@@ -1182,9 +1206,6 @@ fn test_deep_tuples() {
             block.set_epoch(StacksEpochId::Epoch2_05);
         }
 
-        let stack_limit =
-            (AST_CALL_STACK_DEPTH_BUFFER + (MAX_CALL_STACK_DEPTH as u64) + 1) as usize;
-
         let meets_stack_depth_tuple = format!("{}u1 {}", "{ a : ".repeat(31), "} ".repeat(31));
         let exceeds_stack_depth_tuple = format!("{}u1 {}", "{ a : ".repeat(32), "} ".repeat(32));
 
@@ -1260,7 +1281,7 @@ fn test_deep_tuples_ast_precheck() {
         }
 
         let stack_limit =
-            (AST_CALL_STACK_DEPTH_BUFFER + (MAX_CALL_STACK_DEPTH as u64) + 1) as usize;
+            StackDepthLimits::for_epoch(block.get_epoch()).max_nesting_depth() as usize;
 
         // absurdly deep tuple depth
         let exceeds_stack_depth_tuple = format!(
@@ -1286,12 +1307,17 @@ fn test_deep_tuples_ast_precheck() {
         });
 
         match error {
-            ClarityError::Interpreter(VmExecutionError::Runtime(r_e, _)) => {
-                eprintln!("Runtime error: {:?}", r_e);
+            ClarityError::Parse(ref parse_error) => {
+                assert!(
+                    matches!(
+                        *parse_error.err,
+                        ParseErrorKind::ExpressionStackDepthTooDeep { .. }
+                            | ParseErrorKind::VaryExpressionStackDepthTooDeep { .. }
+                    ),
+                    "Expected a stack depth parse error, got: {error:?}"
+                );
             }
-            other => {
-                eprintln!("Other error: {:?}", other);
-            }
+            other => panic!("Expected a parse error, got: {other:?}"),
         }
 
         block.rollback_block();
@@ -1327,8 +1353,6 @@ fn test_deep_type_nesting() {
             block.set_epoch(StacksEpochId::Epoch2_05);
         }
 
-        let stack_limit =
-            (AST_CALL_STACK_DEPTH_BUFFER + (MAX_CALL_STACK_DEPTH as u64) + 1) as usize;
         let mut parts = vec!["(a0 { a0 : u1 })".to_string()];
         for i in 1..1024 {
             parts.push(format!("(a{} {{ a{} : (print a{}) }})", i, i, i - 1));
@@ -1357,12 +1381,16 @@ fn test_deep_type_nesting() {
         });
 
         match error {
-            ClarityError::Interpreter(VmExecutionError::Runtime(r_e, _)) => {
-                eprintln!("Runtime error: {:?}", r_e);
+            ClarityError::StaticCheck(ref check_error) => {
+                assert!(
+                    matches!(
+                        *check_error.err,
+                        StaticCheckErrorKind::BadTupleConstruction { .. }
+                    ),
+                    "Expected a bad tuple construction error, got: {error:?}"
+                );
             }
-            other => {
-                eprintln!("Other error: {:?}", other);
-            }
+            other => panic!("Expected a static check error, got: {other:?}"),
         }
         block.rollback_block();
     }
