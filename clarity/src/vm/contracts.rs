@@ -30,7 +30,7 @@ use crate::vm::version::ClarityVersion;
 // this type in the `contexts` module, etc.
 #[derive(Clone)]
 pub struct Contract {
-    contract_context: Arc<ContractContext>,
+    pub contract_context: Arc<ContractContext>,
 }
 
 impl Deref for Contract {

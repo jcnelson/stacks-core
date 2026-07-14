@@ -88,8 +88,8 @@ pub struct DefinedFunction {
     name: ClarityName,
     arg_types: Vec<TypeSignature>,
     pub define_type: DefineType,
-    arguments: Vec<ClarityName>,
-    body: SymbolicExpression,
+    pub arguments: Vec<ClarityName>,
+    pub body: SymbolicExpression,
 }
 
 /// This enum handles the actual invocation of the method
