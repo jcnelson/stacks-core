@@ -60,19 +60,19 @@ pub const WRAPPER_VALUE_SIZE: u32 = 1;
 /// Maximum byte length for Value string representations in error messages.
 const MAX_ERROR_VALUE_DISPLAY_LEN: usize = 512;
 
-#[derive(Debug, Clone, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Eq, Hash, Serialize, Deserialize)]
 pub struct TupleData {
     // todo: remove type_signature
     pub type_signature: TupleTypeSignature,
     pub data_map: BTreeMap<ClarityName, Value>,
 }
 
-#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct BuffData {
     pub data: Vec<u8>,
 }
 
-#[derive(Debug, Clone, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Eq, Hash, Serialize, Deserialize)]
 pub struct ListData {
     pub data: Vec<Value>,
     // todo: remove type_signature
@@ -230,18 +230,18 @@ pub enum ContractIdentifier {
     Qualified(QualifiedContractIdentifier),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct OptionalData {
     pub data: Option<Box<Value>>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ResponseData {
     pub committed: bool,
     pub data: Box<Value>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct CallableData {
     pub contract_identifier: QualifiedContractIdentifier,
     pub trait_identifier: Option<TraitIdentifier>,
@@ -312,7 +312,7 @@ impl TraitIdentifier {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Value {
     Int(i128),
     UInt(u128),
@@ -328,7 +328,7 @@ pub enum Value {
     //  must be handled in the value sanitization routine!
 }
 
-#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Eq, PartialEq, Hash, Serialize, Deserialize)]
 pub enum SequenceData {
     Buffer(BuffData),
     List(ListData),
@@ -736,7 +736,7 @@ impl SequenceData {
     }
 }
 
-#[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Eq, PartialEq, Hash, Serialize, Deserialize)]
 pub enum CharType {
     UTF8(UTF8Data),
     ASCII(ASCIIData),
@@ -757,7 +757,7 @@ impl fmt::Debug for CharType {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ASCIIData {
     pub data: Vec<u8>,
 }
@@ -773,7 +773,7 @@ impl fmt::Display for ASCIIData {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct UTF8Data {
     pub data: Vec<Vec<u8>>,
 }

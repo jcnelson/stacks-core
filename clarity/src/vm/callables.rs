@@ -86,7 +86,7 @@ pub enum DefineType {
 pub struct DefinedFunction {
     identifier: FunctionIdentifier,
     name: ClarityName,
-    arg_types: Vec<TypeSignature>,
+    pub arg_types: Vec<TypeSignature>,
     pub define_type: DefineType,
     pub arguments: Vec<ClarityName>,
     pub body: SymbolicExpression,

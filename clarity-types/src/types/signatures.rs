@@ -99,7 +99,14 @@ mod tuple_type_map_serde {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+impl Hash for TupleTypeSignature {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        use std::ops::Deref;
+        self.type_map.deref().hash(state);
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct BufferLength(u32);
 
 impl BufferLength {
@@ -180,7 +187,7 @@ impl TryFrom<i128> for BufferLength {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct StringUTF8Length(u32);
 
 impl StringUTF8Length {
@@ -268,7 +275,7 @@ impl TryFrom<i128> for StringUTF8Length {
 //   2. The only methods which may be called on TypeSignatures that are too large
 //        (i.e., the only function that can be called by the constructor before
 //         it fails) is the `.size()` method, which may be used to check the size.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum TypeSignature {
     NoType,
     IntType,
@@ -296,7 +303,7 @@ pub enum TypeSignature {
     TraitReferenceType(TraitIdentifier),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum SequenceSubtype {
     BufferType(BufferLength),
     ListType(ListTypeData),
@@ -318,7 +325,7 @@ impl SequenceSubtype {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum StringSubtype {
     ASCII(BufferLength),
     UTF8(StringUTF8Length),
@@ -335,7 +342,7 @@ use self::TypeSignature::{
     ResponseType, SequenceType, TraitReferenceType, TupleType, UIntType,
 };
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ListTypeData {
     max_len: u32,
     entry_type: Box<TypeSignature>,

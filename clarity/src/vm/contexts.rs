@@ -358,7 +358,7 @@ pub struct GlobalContext<'a, 'hooks> {
     pub abort_callback: AbortCallback,
 }
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct ContractContext {
     /// The identifier of this contract
     pub contract_identifier: QualifiedContractIdentifier,
