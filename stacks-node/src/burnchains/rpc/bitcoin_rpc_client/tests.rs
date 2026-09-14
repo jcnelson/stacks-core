@@ -50,6 +50,18 @@ mod utils {
         )
         .expect("Rpc Client creation should be ok!")
     }
+
+    /// Create a config exposing the fields required by BitcoinRpcClient.
+    pub fn create_stx_config() -> Config {
+        let mut config = Config::default();
+        config.burnchain.username = Some(String::from("user"));
+        config.burnchain.password = Some(String::from("12345"));
+        config.burnchain.peer_host = String::from("127.0.0.1");
+        config.burnchain.wallet_name = Some("my_wallet".to_string());
+        config.burnchain.rpc_port = 10000;
+        config.burnchain.timeout = 300;
+        config
+    }
 }
 
 #[test]
@@ -251,6 +263,75 @@ fn test_create_wallet_ok() {
     client
         .create_wallet("testwallet", Some(true))
         .expect("create wallet should be ok!");
+}
+
+#[test]
+fn test_load_wallet_ok() {
+    let expected_request = json!({
+        "jsonrpc": "2.0",
+        "id": "stacks",
+        "method": "loadwallet",
+        "params": ["testwallet"]
+    });
+
+    let mock_response = json!({
+        "id": "stacks",
+        "result": {
+            "name": "testwallet",
+            "warning": null
+        },
+        "error": null
+    });
+
+    let mut server: mockito::ServerGuard = mockito::Server::new();
+    let _m = server
+        .mock("POST", "/")
+        .match_body(mockito::Matcher::PartialJson(expected_request.clone()))
+        .with_status(200)
+        .with_header("Content-Type", "application/json")
+        .with_body(mock_response.to_string())
+        .create();
+
+    let client = utils::setup_client(&server);
+    client
+        .load_wallet("testwallet")
+        .expect("load wallet should be ok!");
+}
+
+#[test]
+fn test_list_wallet_dir_ok() {
+    let expected_request = json!({
+        "jsonrpc": "2.0",
+        "id": "stacks",
+        "method": "listwalletdir",
+        "params": []
+    });
+
+    let mock_response = json!({
+        "id": "stacks",
+        "result": {
+            "wallets": [
+                { "name": "wallet1" },
+                { "name": "wallet2" }
+            ]
+        },
+        "error": null
+    });
+
+    let mut server: mockito::ServerGuard = mockito::Server::new();
+    let _m = server
+        .mock("POST", "/")
+        .match_body(mockito::Matcher::PartialJson(expected_request.clone()))
+        .with_status(200)
+        .with_header("Content-Type", "application/json")
+        .with_body(mock_response.to_string())
+        .create();
+
+    let client = utils::setup_client(&server);
+    let wallets = client
+        .list_wallet_dir()
+        .expect("list wallet dir should be ok!");
+    assert_eq!(vec!["wallet1".to_owned(), "wallet2".to_owned()], wallets);
 }
 
 #[test]
@@ -670,6 +751,7 @@ fn test_send_raw_transaction_ok_with_custom_params() {
 fn test_get_descriptor_info_ok() {
     let descriptor = format!("addr(bc1_address)");
     let expected_checksum = "mychecksum";
+    let expected_descriptor = format!("{descriptor}#{expected_checksum}");
 
     let expected_request = json!({
         "jsonrpc": "2.0",
@@ -681,6 +763,7 @@ fn test_get_descriptor_info_ok() {
     let mock_response = json!({
         "id": "stacks",
         "result": {
+            "descriptor": expected_descriptor,
             "checksum": expected_checksum
         },
         "error": null,
@@ -699,6 +782,7 @@ fn test_get_descriptor_info_ok() {
     let info = client
         .get_descriptor_info(&descriptor)
         .expect("Should work!");
+    assert_eq!(expected_descriptor, info.descriptor);
     assert_eq!(expected_checksum, info.checksum);
 }
 
@@ -1024,4 +1108,23 @@ pub fn test_convert_sat_to_btc() {
     assert_eq!("1.00000000", to_btc(100_000_000), "SAT 100_000_000 ok!");
     assert_eq!("0.50000000", to_btc(50_000_000), "SAT 50_000_000 ok!");
     assert_eq!("0.00000001", to_btc(1), "SAT 1 ok!");
+}
+
+#[test]
+fn test_client_creation_ok_from_stx_config() {
+    let config = utils::create_stx_config();
+
+    _ = BitcoinRpcClient::from_stx_config(&config).expect("Client creation should work!");
+}
+
+#[test]
+fn test_client_creation_fails_due_to_stx_config_missing_auth() {
+    let mut config_no_auth = utils::create_stx_config();
+    config_no_auth.burnchain.username = None;
+    config_no_auth.burnchain.password = None;
+
+    let err = BitcoinRpcClient::from_stx_config(&config_no_auth)
+        .expect_err("Client creation should fail!");
+
+    assert!(matches!(err, BitcoinRpcClientError::MissingCredentials));
 }

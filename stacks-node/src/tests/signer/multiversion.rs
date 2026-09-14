@@ -19,20 +19,23 @@ use libsigner::v0::messages::{
     BlockAccepted, BlockResponse, BlockResponseData, RejectReason, SignerMessage,
     SignerMessageMetadata,
 };
-use libsigner::v0::signer_state::{MinerState, ReplayTransactionSet, SignerStateMachine};
+use libsigner::v0::signer_state::{MinerState, SignerStateMachine};
+use libsigner_v3_3_0_0_5;
 use libsigner_v3_3_0_0_5::v0::messages::SignerMessage as OldSignerMessage;
+use signer_v3_3_0_0_5_0;
 use signer_v3_3_0_0_5_0::v0::signer_state::SUPPORTED_SIGNER_PROTOCOL_VERSION as OldSupportedVersion;
 use stacks::chainstate::stacks::StacksTransaction;
 use stacks::util::hash::{Hash160, Sha512Trunc256Sum};
 use stacks::util::secp256k1::{MessageSignature, Secp256k1PrivateKey};
 use stacks_common::types::chainstate::{ConsensusHash, StacksBlockId};
+use stacks_common_v3_3_0_0_5;
 use stacks_common_v3_3_0_0_5::codec::StacksMessageCodec as OldStacksMessageCodec;
 use stacks_signer::runloop::{RewardCycleInfo, State, StateInfo};
 use stacks_signer::v0::signer_state::{
     LocalStateMachine, SUPPORTED_SIGNER_PROTOCOL_VERSION as NewSupportedVersion,
 };
 use stacks_signer::v0::SpawnedSigner;
-use {libsigner_v3_3_0_0_5, signer_v3_3_0_0_5_0, stacks_common_v3_3_0_0_5, stacks_v3_3_0_0_5};
+use stacks_v3_3_0_0_5;
 
 use super::SpawnedSignerTrait;
 use crate::stacks_common::codec::StacksMessageCodec;
@@ -77,6 +80,7 @@ pub fn miner_state_v3_3_0_0_5_to_current(
 }
 
 // Helper function to convert from one to the other
+#[allow(dead_code)]
 pub fn stacks_transaction_v3_3_0_0_5_to_current(
     tx: &stacks_v3_3_0_0_5::chainstate::stacks::StacksTransaction,
 ) -> StacksTransaction {
@@ -101,15 +105,6 @@ pub fn signer_state_machine_v3_3_0_0_5_to_current(
         burn_block_height: machine.burn_block_height,
         current_miner: miner_state_v3_3_0_0_5_to_current(&machine.current_miner),
         active_signer_protocol_version: machine.active_signer_protocol_version,
-        tx_replay_set: ReplayTransactionSet::new(
-            machine
-                .tx_replay_set
-                .clone()
-                .unwrap_or_default()
-                .iter()
-                .map(stacks_transaction_v3_3_0_0_5_to_current)
-                .collect(),
-        ),
     }
 }
 
@@ -176,9 +171,11 @@ impl SpawnedSignerTrait for MultiverSpawnedSigner {
                 reorg_attempts_activity_timeout: c.reorg_attempts_activity_timeout,
                 dry_run: c.dry_run,
                 proposal_wait_for_parent_time: c.proposal_wait_for_parent_time,
-                validate_with_replay_tx: c.validate_with_replay_tx,
+                // Transaction replay was removed from the current config; the pinned older
+                // signer still has these fields, so feed it the values replay-disabled.
+                validate_with_replay_tx: false,
                 capitulate_miner_view_timeout: c.capitulate_miner_view_timeout,
-                reset_replay_set_after_fork_blocks: c.reset_replay_set_after_fork_blocks,
+                reset_replay_set_after_fork_blocks: 2,
                 stackerdb_timeout: c.stackerdb_timeout,
                 supported_signer_protocol_version: c.supported_signer_protocol_version,
                 read_count_idle_timeout: c.read_count_idle_timeout,
@@ -292,13 +289,7 @@ fn old_version_parses_new_messages() {
         metadata: SignerMessageMetadata {
             server_version: "latest-version_signer".into(),
         },
-        response_data: BlockResponseData {
-            version: 4,
-            tenure_extend_timestamp: 2049,
-            reject_reason: RejectReason::NotRejected,
-            tenure_extend_read_count_timestamp: 5058,
-            unknown_bytes: vec![],
-        },
+        response_data: BlockResponseData::new(2049, RejectReason::NotRejected, 5058, None),
     };
 
     let serialized_new_msg =
@@ -330,10 +321,9 @@ fn old_version_parses_new_messages() {
         as_block_accepted.response_data.reject_reason.to_string(),
         new_msg.response_data.reject_reason.to_string()
     );
-    let empty_vec: Vec<u8> = vec![];
     assert_eq!(
-        as_block_accepted.response_data.unknown_bytes, // No difference between versions at the moment
-        empty_vec
+        as_block_accepted.response_data.unknown_bytes,
+        vec![0], // The old signer preserves the new `failed_txid: None` marker.
     );
 
     let serialized_old_msg = old_msg.serialize_to_vec();

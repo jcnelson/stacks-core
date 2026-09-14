@@ -1,3 +1,19 @@
+// Copyright (C) 2013-2020 Blockstack PBC, a public benefit corporation
+// Copyright (C) 2020-2026 Stacks Open Internet Foundation
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
 #[cfg(test)]
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -30,7 +46,7 @@ use stacks_common::util::hash::Hash160;
 use stx_genesis::GenesisData;
 
 use super::RunLoopCallbacks;
-use crate::burnchains::{make_bitcoin_indexer, Error};
+use crate::burnchains::Error;
 use crate::globals::NeonGlobals as Globals;
 use crate::monitoring::{start_serving_monitoring_metrics, MonitoringError};
 use crate::neon_node::{
@@ -314,11 +330,7 @@ impl RunLoop {
             config.burnchain.burn_fee_cap,
         )));
 
-        let mut event_dispatcher = EventDispatcher::new(config.get_working_dir());
-        for observer in config.events_observers.iter() {
-            event_dispatcher.register_observer(observer);
-        }
-        event_dispatcher.process_pending_payloads();
+        let event_dispatcher = EventDispatcher::from_config(&config);
 
         Self {
             config,
@@ -455,9 +467,10 @@ impl RunLoop {
             }
             let keychain = Keychain::default(self.config.node.seed.clone());
             let mut op_signer = keychain.generate_op_signer();
-            if let Err(e) = burnchain.create_wallet_if_dne() {
-                warn!("Error when creating wallet: {e:?}");
-            }
+
+            // a miner cannot operate without a wallet; retry: bitcoind may
+            // still be starting up
+            burnchain.ensure_miner_wallet_loaded();
             let mut btc_addrs = vec![(
                 StacksEpochId::Epoch2_05,
                 // legacy
@@ -676,8 +689,6 @@ impl RunLoop {
             true,
         )
         .expect("Failed to connect Atlas DB during startup");
-        let coordinator_indexer =
-            make_bitcoin_indexer(&self.config, Some(self.should_keep_running.clone()));
 
         let coordinator_thread_handle = thread::Builder::new()
             .name(format!(
@@ -706,7 +717,6 @@ impl RunLoop {
                     cost_estimator.as_deref_mut(),
                     fee_estimator.as_deref_mut(),
                     miner_status,
-                    coordinator_indexer,
                     atlas_db,
                 );
             })
@@ -791,6 +801,9 @@ impl RunLoop {
             .coordinator_channels
             .take()
             .expect("Run loop already started, can only start once after initialization.");
+
+        // Apply config-driven process-wide state before any chainstate is opened.
+        self.config.apply_runtime_state();
 
         Self::setup_termination_handler(self.should_keep_running.clone(), false);
 

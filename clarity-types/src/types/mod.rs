@@ -30,6 +30,9 @@ use stacks_common::types::StacksEpochId;
 use stacks_common::types::chainstate::StacksAddress;
 #[cfg(any(test, feature = "testing"))]
 use stacks_common::types::chainstate::StacksPrivateKey;
+pub use stacks_common::util::bounded_string::{
+    BoundedErrorString, BoundedString, MAX_ERROR_MESSAGE_LEN,
+};
 use stacks_common::util::hash;
 
 pub use self::signatures::{
@@ -58,9 +61,15 @@ pub const MAX_TYPE_DEPTH: u8 = 32;
 /// this is the charged size for wrapped values, i.e., response or optionals
 pub const WRAPPER_VALUE_SIZE: u32 = 1;
 /// Maximum byte length for Value string representations in error messages.
-const MAX_ERROR_VALUE_DISPLAY_LEN: usize = 512;
+/// Deliberately smaller than `MAX_ERROR_MESSAGE_LEN` so a rendered value
+/// cannot eat the whole message budget.
+pub const MAX_ERROR_VALUE_DISPLAY_LEN: usize = 512;
 
-#[derive(Debug, Clone, Eq, Serialize, Deserialize)]
+/// A Clarity value rendered for use in an error message, bounded by
+/// construction (see [`Value::to_error_string`]).
+pub type BoundedValueString = BoundedString<MAX_ERROR_VALUE_DISPLAY_LEN>;
+
+#[derive(Clone, Eq, Serialize, Deserialize)]
 pub struct TupleData {
     // todo: remove type_signature
     pub type_signature: TupleTypeSignature,
@@ -72,7 +81,7 @@ pub struct BuffData {
     pub data: Vec<u8>,
 }
 
-#[derive(Debug, Clone, Eq, Serialize, Deserialize)]
+#[derive(Clone, Eq, Serialize, Deserialize)]
 pub struct ListData {
     pub data: Vec<Value>,
     // todo: remove type_signature
@@ -123,7 +132,7 @@ impl StandardPrincipalData {
         (version, bytes)
     }
 
-    pub fn is_mainnet(self) -> bool {
+    pub fn is_mainnet(&self) -> bool {
         self.0 == C32_ADDRESS_VERSION_MAINNET_MULTISIG
             || self.0 == C32_ADDRESS_VERSION_MAINNET_SINGLESIG
     }
@@ -244,7 +253,7 @@ pub struct ResponseData {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CallableData {
     pub contract_identifier: QualifiedContractIdentifier,
-    pub trait_identifier: Option<TraitIdentifier>,
+    pub trait_identifier: Option<Box<TraitIdentifier>>,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash, Serialize, Deserialize, PartialOrd, Ord)]
@@ -335,13 +344,67 @@ pub enum SequenceData {
     String(CharType),
 }
 
-/// A helper to properly propogate errors from retain_values
-#[derive(Debug)]
+/// A helper to properly propagate errors from try_retain
+#[derive(Debug, PartialEq)]
 pub enum RetainValuesError<E> {
     /// An internal error from Clarity type system operations occurred
     Internal(ClarityTypeError),
     /// The provided predicate returned an error
     Predicate(E),
+}
+
+/// A lazy iterator over the elements of a [`SequenceData`], yielding owned [`Value`]s.
+///
+/// Obtained via the [`IntoIterator`] impl on [`SequenceData`], which consumes the sequence
+/// and moves List elements without cloning.
+///
+/// Implements [`ExactSizeIterator`] so callers can query `len()` without pre-collecting.
+pub enum SequenceIter {
+    Buffer(std::vec::IntoIter<u8>),
+    List(std::vec::IntoIter<Value>),
+    ASCII(std::vec::IntoIter<u8>),
+    UTF8(std::vec::IntoIter<Vec<u8>>),
+}
+
+impl Iterator for SequenceIter {
+    type Item = Result<Value, ClarityTypeError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            SequenceIter::Buffer(iter) => iter.next().map(|v| BuffData::to_value(&v)),
+            SequenceIter::List(iter) => iter.next().map(ListData::into_value),
+            SequenceIter::ASCII(iter) => iter.next().map(|v| ASCIIData::to_value(&v)),
+            SequenceIter::UTF8(iter) => iter.next().map(UTF8Data::into_value),
+        }
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let len = match self {
+            SequenceIter::Buffer(iter) => iter.len(),
+            SequenceIter::List(iter) => iter.len(),
+            SequenceIter::ASCII(iter) => iter.len(),
+            SequenceIter::UTF8(iter) => iter.len(),
+        };
+        (len, Some(len))
+    }
+}
+
+impl ExactSizeIterator for SequenceIter {}
+
+impl IntoIterator for SequenceData {
+    type Item = Result<Value, ClarityTypeError>;
+    type IntoIter = SequenceIter;
+
+    fn into_iter(self) -> Self::IntoIter {
+        match self {
+            SequenceData::Buffer(data) => SequenceIter::Buffer(data.data.into_iter()),
+            SequenceData::List(data) => SequenceIter::List(data.data.into_iter()),
+            SequenceData::String(CharType::ASCII(data)) => {
+                SequenceIter::ASCII(data.data.into_iter())
+            }
+            SequenceData::String(CharType::UTF8(data)) => SequenceIter::UTF8(data.data.into_iter()),
+        }
+    }
 }
 
 impl SequenceData {
@@ -543,41 +606,60 @@ impl SequenceData {
         }
     }
 
-    /// Retains elements where the predicate returns Ok(true).
-    /// Removes elements where it returns Ok(false).
-    /// If the predicate or internal value conversion returns an error, the operation
-    /// is aborted and the original sequence is left unmodified. The first error is propagated.
-    pub fn retain_values<E, F>(&mut self, mut predicate: F) -> Result<(), RetainValuesError<E>>
+    /// Filters the sequence in-place, retaining only elements for which the
+    /// predicate returns `Ok(true)`.
+    ///
+    /// Uses a single forward pass (O(n)): kept elements are swapped to the
+    /// front, then the tail is truncated.
+    ///
+    /// On error the sequence is consumed and cannot be recovered
+    pub fn try_retain<E, F>(mut self, mut predicate: F) -> Result<Self, RetainValuesError<E>>
     where
-        F: FnMut(SymbolicExpression) -> Result<bool, E>,
+        F: FnMut(Value) -> Result<bool, E>,
     {
-        // Note: this macro can probably get removed once
-        // ```Vec::drain_filter<F>(&mut self, filter: F) -> DrainFilter<T, F>```
-        // is available in rust stable channel (experimental at this point).
         macro_rules! retain_inner {
             ($data:expr, $seq_type:ident) => {{
-                let mut i = 0;
-                while i != $data.data.len() {
-                    let atom_value = SymbolicExpression::atom_value(
-                        $seq_type::to_value(&$data.data[i]).map_err(RetainValuesError::Internal)?,
-                    );
-                    let keep = predicate(atom_value).map_err(RetainValuesError::Predicate)?;
+                let mut write = 0;
+                for read in 0..$data.data.len() {
+                    let value = $seq_type::to_value(&$data.data[read])
+                        .map_err(RetainValuesError::Internal)?;
+                    let keep = predicate(value).map_err(RetainValuesError::Predicate)?;
                     if keep {
-                        i += 1;
-                    } else {
-                        $data.data.remove(i);
+                        if write != read {
+                            $data.data.swap(write, read);
+                        }
+                        write += 1;
                     }
                 }
+                $data.data.truncate(write);
             }};
         }
 
-        match self {
+        match &mut self {
             SequenceData::Buffer(data) => retain_inner!(data, BuffData),
             SequenceData::List(data) => retain_inner!(data, ListData),
             SequenceData::String(CharType::ASCII(data)) => retain_inner!(data, ASCIIData),
             SequenceData::String(CharType::UTF8(data)) => retain_inner!(data, UTF8Data),
         }
-        Ok(())
+        Ok(self)
+    }
+
+    /// Reserve capacity for `additional` more elements in the underlying
+    /// storage, avoiding intermediate reallocations during a sequence of
+    /// `concat` calls. The unit of `additional` matches the natural unit of
+    /// each sequence kind: bytes for `Buffer`/`String(ASCII)`, chars for
+    /// `String(UTF8)`, and elements for `List`.
+    ///
+    /// This is intended for variadic builders (e.g. Clarity 6's
+    /// `special_concat_v400`) that know the final size up front and want
+    /// to do a single allocation.
+    pub fn reserve(&mut self, additional: usize) {
+        match self {
+            SequenceData::Buffer(BuffData { data }) => data.reserve(additional),
+            SequenceData::List(ListData { data, .. }) => data.reserve(additional),
+            SequenceData::String(CharType::ASCII(ASCIIData { data })) => data.reserve(additional),
+            SequenceData::String(CharType::UTF8(UTF8Data { data })) => data.reserve(additional),
+        }
     }
 
     pub fn concat(
@@ -1350,17 +1432,8 @@ impl Value {
 
     /// Format as a truncated string for use in error messages.
     /// Avoids cloning potentially large Values in error paths.
-    pub fn to_error_string(&self) -> String {
-        let full = format!("{self:?}");
-        if full.len() <= MAX_ERROR_VALUE_DISPLAY_LEN {
-            full
-        } else {
-            let end = (0..=MAX_ERROR_VALUE_DISPLAY_LEN)
-                .rev()
-                .find(|&i| full.is_char_boundary(i))
-                .unwrap_or(0);
-            format!("{}...", &full[..end])
-        }
+    pub fn to_error_string(&self) -> BoundedValueString {
+        BoundedValueString::from_debug(self)
     }
 }
 
@@ -1476,16 +1549,7 @@ impl fmt::Display for Value {
             Value::Response(res_data) => write!(f, "{res_data}"),
             Value::Sequence(SequenceData::Buffer(vec_bytes)) => write!(f, "0x{vec_bytes}"),
             Value::Sequence(SequenceData::String(string)) => write!(f, "{string}"),
-            Value::Sequence(SequenceData::List(list_data)) => {
-                write!(f, "(")?;
-                for (ix, v) in list_data.data.iter().enumerate() {
-                    if ix > 0 {
-                        write!(f, " ")?;
-                    }
-                    write!(f, "{v}")?;
-                }
-                write!(f, ")")
-            }
+            Value::Sequence(SequenceData::List(list_data)) => write!(f, "{list_data}"),
             Value::CallableContract(callable_data) => write!(f, "{callable_data}"),
         }
     }
@@ -1658,6 +1722,36 @@ impl From<ContractName> for ASCIIData {
     }
 }
 
+/// How deserialization treats a typed tuple whose data disagrees with the
+/// declared field set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TupleFieldsBehavior {
+    allow_duplicate_fields: bool,
+    allow_missing_fields: bool,
+}
+
+impl TupleFieldsBehavior {
+    /// Pre-Epoch 4.1: duplicate fields overwrite and missing fields are allowed.
+    pub const LEGACY: Self = Self {
+        allow_duplicate_fields: true,
+        allow_missing_fields: true,
+    };
+
+    /// Epoch 4.1+: reject duplicates and require exactly the declared fields.
+    pub const EXACT_FIELD_SET: Self = Self {
+        allow_duplicate_fields: false,
+        allow_missing_fields: false,
+    };
+
+    pub fn from_epoch(epoch: &StacksEpochId) -> Self {
+        if epoch.enforces_exact_typed_tuple_field_set() {
+            Self::EXACT_FIELD_SET
+        } else {
+            Self::LEGACY
+        }
+    }
+}
+
 impl TupleData {
     fn new(
         type_signature: TupleTypeSignature,
@@ -1700,11 +1794,13 @@ impl TupleData {
     }
 
     // TODO: add tests from mutation testing results #4834
+    /// Construct a typed tuple, checking `data` against `expected`.
     #[cfg_attr(test, mutants::skip)]
     pub fn from_data_typed(
         epoch: &StacksEpochId,
         data: Vec<(ClarityName, Value)>,
         expected: &TupleTypeSignature,
+        behavior: TupleFieldsBehavior,
     ) -> Result<TupleData, ClarityTypeError> {
         let mut data_map = BTreeMap::new();
 
@@ -1722,7 +1818,31 @@ impl TupleData {
                 ));
             }
 
-            data_map.insert(name, value);
+            match data_map.entry(name) {
+                Entry::Vacant(e) => {
+                    e.insert(value);
+                }
+                Entry::Occupied(mut e) => {
+                    if !behavior.allow_duplicate_fields {
+                        return Err(ClarityTypeError::DuplicateTupleField(e.key().to_string()));
+                    }
+                    // Lossy pre-4.1 behavior: the last duplicate wins
+                    e.insert(value);
+                }
+            }
+        }
+
+        // With duplicates rejected, equal cardinality means the field sets
+        // match exactly.
+        if !behavior.allow_missing_fields && data_map.len() as u64 != expected.len() {
+            let mut actual_types = BTreeMap::new();
+            for (name, value) in data_map.iter() {
+                actual_types.insert(name.clone(), TypeSignature::type_of(value)?);
+            }
+            return Err(ClarityTypeError::TypeMismatch(
+                Box::new(expected.clone().into()),
+                Box::new(TupleTypeSignature::try_from(actual_types)?.into()),
+            ));
         }
 
         Ok(Self::new(expected.clone(), data_map))
@@ -1761,6 +1881,32 @@ impl fmt::Display for TupleData {
             write!(f, "({} {value})", &**name)?;
         }
         write!(f, ")")
+    }
+}
+
+// `Debug` for `TupleData` and `ListData` must not render `type_signature`:
+impl fmt::Debug for TupleData {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{self}")
+    }
+}
+
+impl fmt::Display for ListData {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "(")?;
+        for (ix, v) in self.data.iter().enumerate() {
+            if ix > 0 {
+                write!(f, " ")?;
+            }
+            write!(f, "{v}")?;
+        }
+        write!(f, ")")
+    }
+}
+
+impl fmt::Debug for ListData {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{self}")
     }
 }
 

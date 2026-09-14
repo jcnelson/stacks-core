@@ -77,7 +77,7 @@ fn test_try_parse_request() {
     let (preamble, contents) = parsed_request.destruct();
 
     assert_eq!(&preamble, request.preamble());
-    assert_eq!(handler.profiler, false);
+    assert!(!handler.profiler);
 }
 
 #[test]
@@ -115,7 +115,7 @@ fn test_try_parse_request_with_profiler() {
 
     let (preamble, contents) = parsed_request.destruct();
 
-    assert_eq!(handler.profiler, true);
+    assert!(handler.profiler);
 }
 
 #[test]
@@ -285,8 +285,8 @@ fn simulate_block_with_pc_failure() {
     let private_key = StacksPrivateKey::from_seed("blocksimulate".as_bytes());
     let address = to_addr(&private_key);
 
-    let contract_name = ContractName::from("test");
-    let function_name = ClarityName::from("test");
+    let contract_name = ContractName::from_literal("test");
+    let function_name = ClarityName::from_literal("test");
 
     // Set up the RPC test with a contract, so that we can test a post-condition failure
     let rpc_test =
@@ -310,8 +310,8 @@ fn simulate_block_with_pc_failure() {
                 1000,
                 CHAIN_ID_TESTNET,
                 &address,
-                &contract_name,
-                &function_name,
+                contract_name.clone(),
+                function_name.clone(),
                 &vec![],
             );
 
@@ -470,7 +470,7 @@ fn test_try_make_response_with_unsuccessful_transaction() {
     assert_eq!(resp.transactions[0].txid, deploy_tx.txid());
 
     assert_eq!(
-        resp.transactions.last().unwrap().vm_error.clone().unwrap(),
-        ":0:0: use of unresolved function 'broken'"
+        resp.transactions.last().unwrap().vm_error.as_deref(),
+        Some(":0:0: use of unresolved function 'broken'")
     );
 }

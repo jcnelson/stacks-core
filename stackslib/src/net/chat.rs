@@ -1,5 +1,5 @@
 // Copyright (C) 2013-2020 Blockstack PBC, a public benefit corporation
-// Copyright (C) 2020-2023 Stacks Open Internet Foundation
+// Copyright (C) 2020-2026 Stacks Open Internet Foundation
 //
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
@@ -20,8 +20,7 @@ use std::net::SocketAddr;
 use std::{cmp, mem};
 
 use clarity::vm::types::QualifiedContractIdentifier;
-use rand;
-use rand::{thread_rng, Rng};
+use rand::{self, thread_rng, Rng};
 use stacks_common::types::net::PeerAddress;
 use stacks_common::types::StacksPublicKeyBuffer;
 use stacks_common::util::hash::to_hex;
@@ -66,7 +65,7 @@ pub const BANDWIDTH_POINT_LIFETIME: u64 = 600;
 pub const MAX_PEER_HEARTBEAT_INTERVAL: usize = 3600 * 6; // 6 hours
 
 /// Statistics on relayer hints in Stacks messages.  Used to deduce network choke points.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct RelayStats {
     pub num_messages: u64, // how many messages a relayer has pushed to this neighbor
     pub num_bytes: u64,    // how many bytes a relayer has pushed to this neighbor
@@ -273,7 +272,8 @@ impl NeighborStats {
             }
         }
 
-        if elapsed_time_start == elapsed_time_end {
+        // "greater than" is possible if the system clock was adjusted between recordings
+        if elapsed_time_start >= elapsed_time_end {
             total_bytes as f64
         } else {
             (total_bytes as f64) / ((elapsed_time_end - elapsed_time_start) as f64)
@@ -467,9 +467,10 @@ impl Neighbor {
     /// Instantiate a Neighbor from HandshakeData, merging the information we have on-disk in the
     /// PeerDB with information in the handshake.
     /// * If we already know about this neighbor, then all previously-calculated state and local
-    /// configuration state will be loaded as well.  This includes things like the calculated
-    /// in/out-degree and last-contact time, as well as the allow/deny time limits.
+    ///   configuration state will be loaded as well.  This includes things like the calculated
+    ///   in/out-degree and last-contact time, as well as the allow/deny time limits.
     /// * If we do not know about this neighbor, then the above state will not be loaded.
+    ///
     /// Returns (the neighbor, whether or not the neighbor was known)
     pub fn load_and_update(
         conn: &DBConn,
@@ -2051,6 +2052,7 @@ impl ConversationP2P {
     /// Check that a message was properly relayed.
     /// * there are no relay cycles
     /// * we didn't send this
+    ///
     /// Update relayer statistics for this conversation
     fn process_relayers(
         &mut self,
@@ -3046,8 +3048,8 @@ mod test {
     use stacks_common::types::chainstate::{BlockHeaderHash, BurnchainHeaderHash, SortitionId};
     use stacks_common::util::pipe::*;
     use stacks_common::util::secp256k1::*;
-    use stacks_common::util::sleep_ms;
     use stacks_common::util::uint::*;
+    use stacks_common::util::*;
 
     use super::*;
     use crate::burnchains::db::BurnchainDB;
@@ -3113,7 +3115,7 @@ mod test {
             burnchain.first_block_height,
             &burnchain.first_block_hash,
             get_epoch_time_secs(),
-            &StacksEpoch::unit_test_pre_2_05(burnchain.first_block_height),
+            &StacksEpoch::unit_test_up_to(burnchain.first_block_height, StacksEpochId::Epoch20),
             burnchain.pox_constants.clone(),
             None,
             true,
@@ -3295,7 +3297,7 @@ mod test {
             chain_view.clone(),
             ConnectionOptions::default(),
             HashMap::new(),
-            StacksEpoch::unit_test_pre_2_05(0),
+            StacksEpoch::unit_test_up_to(0, StacksEpochId::Epoch20),
         );
         network
     }
@@ -3366,7 +3368,7 @@ mod test {
                     &burnchain_1,
                     0x9abcdef0,
                     12350,
-                    "http://peer1.com".into(),
+                    UrlString::from_literal("http://peer1.com"),
                     &[],
                     &[],
                     peer_1_services,
@@ -3377,7 +3379,7 @@ mod test {
                     &burnchain_2,
                     0x9abcdef0,
                     12351,
-                    "http://peer2.com".into(),
+                    UrlString::from_literal("http://peer2.com"),
                     &[],
                     &[],
                     peer_2_services,
@@ -3458,7 +3460,7 @@ mod test {
                 &conn_opts,
                 true,
                 0,
-                StacksEpoch::unit_test_pre_2_05(0),
+                StacksEpoch::unit_test_up_to(0, StacksEpochId::Epoch20),
             );
             let mut convo_2 = ConversationP2P::new(
                 123,
@@ -3468,7 +3470,7 @@ mod test {
                 &conn_opts,
                 true,
                 0,
-                StacksEpoch::unit_test_pre_2_05(0),
+                StacksEpoch::unit_test_up_to(0, StacksEpochId::Epoch20),
             );
 
             // no peer public keys known yet
@@ -3535,7 +3537,10 @@ mod test {
                     data.handshake.expire_block_height,
                     local_peer_2.private_key_expire
                 );
-                assert_eq!(data.handshake.data_url, "http://peer2.com".into());
+                assert_eq!(
+                    data.handshake.data_url,
+                    UrlString::from_literal("http://peer2.com")
+                );
                 assert_eq!(data.heartbeat_interval, conn_opts.heartbeat);
 
                 if peer_1_rc_consensus_hash == peer_2_rc_consensus_hash {
@@ -3592,7 +3597,10 @@ mod test {
                     data.handshake.expire_block_height,
                     local_peer_2.private_key_expire
                 );
-                assert_eq!(data.handshake.data_url, "http://peer2.com".into());
+                assert_eq!(
+                    data.handshake.data_url,
+                    UrlString::from_literal("http://peer2.com")
+                );
                 assert_eq!(data.heartbeat_interval, conn_opts.heartbeat);
             }
 
@@ -3602,7 +3610,10 @@ mod test {
                 convo_2.connection.get_public_key().unwrap(),
                 Secp256k1PublicKey::from_private(&local_peer_1.private_key)
             );
-            assert_eq!(convo_2.data_url, "http://peer1.com".into());
+            assert_eq!(
+                convo_2.data_url,
+                UrlString::from_literal("http://peer1.com")
+            );
 
             // convo_1 got updated with convo_2's peer info, as well as heartbeat
             assert_eq!(convo_1.peer_heartbeat, conn_opts.heartbeat);
@@ -3610,7 +3621,10 @@ mod test {
                 convo_1.connection.get_public_key().unwrap(),
                 Secp256k1PublicKey::from_private(&local_peer_2.private_key)
             );
-            assert_eq!(convo_1.data_url, "http://peer2.com".into());
+            assert_eq!(
+                convo_1.data_url,
+                UrlString::from_literal("http://peer2.com")
+            );
 
             assert_eq!(convo_1.peer_services, peer_2_services);
             assert_eq!(convo_2.peer_services, peer_1_services);
@@ -3680,7 +3694,7 @@ mod test {
                     &burnchain_1,
                     0x9abcdef0,
                     12350,
-                    "http://peer1.com".into(),
+                    UrlString::from_literal("http://peer1.com"),
                     &[],
                     &[],
                     DEFAULT_SERVICES,
@@ -3691,7 +3705,7 @@ mod test {
                     &burnchain_2,
                     0x9abcdef0,
                     12351,
-                    "http://peer2.com".into(),
+                    UrlString::from_literal("http://peer2.com"),
                     &[],
                     &[],
                     DEFAULT_SERVICES,
@@ -3727,7 +3741,7 @@ mod test {
                 &conn_opts,
                 true,
                 0,
-                StacksEpoch::unit_test_pre_2_05(0),
+                StacksEpoch::unit_test_up_to(0, StacksEpochId::Epoch20),
             );
             let mut convo_2 = ConversationP2P::new(
                 123,
@@ -3737,7 +3751,7 @@ mod test {
                 &conn_opts,
                 true,
                 0,
-                StacksEpoch::unit_test_pre_2_05(0),
+                StacksEpoch::unit_test_up_to(0, StacksEpochId::Epoch20),
             );
 
             // no peer public keys known yet
@@ -3797,7 +3811,10 @@ mod test {
                     data.handshake.expire_block_height,
                     local_peer_2.private_key_expire
                 );
-                assert_eq!(data.handshake.data_url, "http://peer2.com".into());
+                assert_eq!(
+                    data.handshake.data_url,
+                    UrlString::from_literal("http://peer2.com")
+                );
                 assert_eq!(data.heartbeat_interval, conn_opts.heartbeat);
             } else {
                 panic!("Unexpected payload message type");
@@ -3809,7 +3826,10 @@ mod test {
                 convo_2.connection.get_public_key().unwrap(),
                 Secp256k1PublicKey::from_private(&local_peer_1.private_key)
             );
-            assert_eq!(convo_2.data_url, "http://peer1.com".into());
+            assert_eq!(
+                convo_2.data_url,
+                UrlString::from_literal("http://peer1.com")
+            );
 
             // convo_1 got updated with convo_2's peer info, as well as heartbeat
             assert_eq!(convo_1.peer_heartbeat, conn_opts.heartbeat);
@@ -3817,7 +3837,10 @@ mod test {
                 convo_1.connection.get_public_key().unwrap(),
                 Secp256k1PublicKey::from_private(&local_peer_2.private_key)
             );
-            assert_eq!(convo_1.data_url, "http://peer2.com".into());
+            assert_eq!(
+                convo_1.data_url,
+                UrlString::from_literal("http://peer2.com")
+            );
         })
     }
 
@@ -3854,7 +3877,7 @@ mod test {
                 &burnchain_1,
                 0x9abcdef0,
                 12350,
-                "http://peer1.com".into(),
+                UrlString::from_literal("http://peer1.com"),
                 &[],
                 &[],
                 DEFAULT_SERVICES,
@@ -3865,7 +3888,7 @@ mod test {
                 &burnchain_2,
                 0x9abcdef0,
                 12351,
-                "http://peer2.com".into(),
+                UrlString::from_literal("http://peer2.com"),
                 &[],
                 &[],
                 DEFAULT_SERVICES,
@@ -3901,7 +3924,7 @@ mod test {
             &conn_opts,
             true,
             0,
-            StacksEpoch::unit_test_pre_2_05(0),
+            StacksEpoch::unit_test_up_to(0, StacksEpochId::Epoch20),
         );
         let mut convo_2 = ConversationP2P::new(
             123,
@@ -3911,7 +3934,7 @@ mod test {
             &conn_opts,
             true,
             0,
-            StacksEpoch::unit_test_pre_2_05(0),
+            StacksEpoch::unit_test_up_to(0, StacksEpochId::Epoch20),
         );
 
         // no peer public keys known yet
@@ -3997,7 +4020,7 @@ mod test {
                 &burnchain_1,
                 0x9abcdef0,
                 12350,
-                "http://peer1.com".into(),
+                UrlString::from_literal("http://peer1.com"),
                 &[],
                 &[],
                 DEFAULT_SERVICES,
@@ -4008,7 +4031,7 @@ mod test {
                 &burnchain_2,
                 0x9abcdef0,
                 12351,
-                "http://peer2.com".into(),
+                UrlString::from_literal("http://peer2.com"),
                 &[],
                 &[],
                 DEFAULT_SERVICES,
@@ -4044,7 +4067,7 @@ mod test {
             &conn_opts,
             true,
             0,
-            StacksEpoch::unit_test_pre_2_05(0),
+            StacksEpoch::unit_test_up_to(0, StacksEpochId::Epoch20),
         );
         let mut convo_2 = ConversationP2P::new(
             123,
@@ -4054,7 +4077,7 @@ mod test {
             &conn_opts,
             true,
             0,
-            StacksEpoch::unit_test_pre_2_05(0),
+            StacksEpoch::unit_test_up_to(0, StacksEpochId::Epoch20),
         );
 
         // no peer public keys known yet
@@ -4140,7 +4163,7 @@ mod test {
                 &burnchain_1,
                 0x9abcdef0,
                 12350,
-                "http://peer1.com".into(),
+                UrlString::from_literal("http://peer1.com"),
                 &[],
                 &[],
                 DEFAULT_SERVICES,
@@ -4151,7 +4174,7 @@ mod test {
                 &burnchain_2,
                 0x9abcdef0,
                 12351,
-                "http://peer2.com".into(),
+                UrlString::from_literal("http://peer2.com"),
                 &[],
                 &[],
                 DEFAULT_SERVICES,
@@ -4187,7 +4210,7 @@ mod test {
             &conn_opts,
             true,
             0,
-            StacksEpoch::unit_test_pre_2_05(0),
+            StacksEpoch::unit_test_up_to(0, StacksEpochId::Epoch20),
         );
         let mut convo_2 = ConversationP2P::new(
             123,
@@ -4197,7 +4220,7 @@ mod test {
             &conn_opts,
             true,
             0,
-            StacksEpoch::unit_test_pre_2_05(0),
+            StacksEpoch::unit_test_up_to(0, StacksEpochId::Epoch20),
         );
 
         // no peer public keys known yet
@@ -4295,7 +4318,7 @@ mod test {
                 &burnchain_1,
                 0x9abcdef0,
                 12350,
-                "http://peer1.com".into(),
+                UrlString::from_literal("http://peer1.com"),
                 &[],
                 &[],
                 DEFAULT_SERVICES,
@@ -4306,7 +4329,7 @@ mod test {
                 &burnchain_2,
                 0x9abcdef0,
                 12351,
-                "http://peer2.com".into(),
+                UrlString::from_literal("http://peer2.com"),
                 &[],
                 &[],
                 DEFAULT_SERVICES,
@@ -4342,7 +4365,7 @@ mod test {
             &conn_opts,
             true,
             0,
-            StacksEpoch::unit_test_pre_2_05(0),
+            StacksEpoch::unit_test_up_to(0, StacksEpochId::Epoch20),
         );
         let mut convo_2 = ConversationP2P::new(
             123,
@@ -4352,7 +4375,7 @@ mod test {
             &conn_opts,
             true,
             0,
-            StacksEpoch::unit_test_pre_2_05(0),
+            StacksEpoch::unit_test_up_to(0, StacksEpochId::Epoch20),
         );
 
         // no peer public keys known yet
@@ -4492,7 +4515,7 @@ mod test {
                 &burnchain_1,
                 0x9abcdef0,
                 12350,
-                "http://peer1.com".into(),
+                UrlString::from_literal("http://peer1.com"),
                 &[],
                 &[],
                 DEFAULT_SERVICES,
@@ -4503,7 +4526,7 @@ mod test {
                 &burnchain_2,
                 0x9abcdef0,
                 12351,
-                "http://peer2.com".into(),
+                UrlString::from_literal("http://peer2.com"),
                 &[],
                 &[],
                 DEFAULT_SERVICES,
@@ -4539,7 +4562,7 @@ mod test {
             &conn_opts,
             true,
             0,
-            StacksEpoch::unit_test_pre_2_05(0),
+            StacksEpoch::unit_test_up_to(0, StacksEpochId::Epoch20),
         );
         let mut convo_2 = ConversationP2P::new(
             123,
@@ -4549,7 +4572,7 @@ mod test {
             &conn_opts,
             true,
             0,
-            StacksEpoch::unit_test_pre_2_05(0),
+            StacksEpoch::unit_test_up_to(0, StacksEpochId::Epoch20),
         );
 
         // no peer public keys known yet
@@ -4634,7 +4657,7 @@ mod test {
                 &burnchain_1,
                 0x9abcdef0,
                 12350,
-                "http://peer1.com".into(),
+                UrlString::from_literal("http://peer1.com"),
                 &[],
                 &[],
                 DEFAULT_SERVICES,
@@ -4645,7 +4668,7 @@ mod test {
                 &burnchain_2,
                 0x9abcdef0,
                 12351,
-                "http://peer2.com".into(),
+                UrlString::from_literal("http://peer2.com"),
                 &[],
                 &[],
                 DEFAULT_SERVICES,
@@ -4681,7 +4704,7 @@ mod test {
             &conn_opts,
             true,
             0,
-            StacksEpoch::unit_test_pre_2_05(0),
+            StacksEpoch::unit_test_up_to(0, StacksEpochId::Epoch20),
         );
         let mut convo_2 = ConversationP2P::new(
             123,
@@ -4691,7 +4714,7 @@ mod test {
             &conn_opts,
             true,
             0,
-            StacksEpoch::unit_test_pre_2_05(0),
+            StacksEpoch::unit_test_up_to(0, StacksEpochId::Epoch20),
         );
 
         // convo_1 sends a handshake to convo_2
@@ -4804,7 +4827,7 @@ mod test {
                 &burnchain_1,
                 0x9abcdef0,
                 12350,
-                "http://peer1.com".into(),
+                UrlString::from_literal("http://peer1.com"),
                 &[],
                 &[],
                 DEFAULT_SERVICES,
@@ -4815,7 +4838,7 @@ mod test {
                 &burnchain_2,
                 0x9abcdef0,
                 12351,
-                "http://peer2.com".into(),
+                UrlString::from_literal("http://peer2.com"),
                 &[],
                 &[],
                 DEFAULT_SERVICES,
@@ -4851,7 +4874,7 @@ mod test {
             &conn_opts,
             true,
             0,
-            StacksEpoch::unit_test_pre_2_05(0),
+            StacksEpoch::unit_test_up_to(0, StacksEpochId::Epoch20),
         );
         let mut convo_2 = ConversationP2P::new(
             123,
@@ -4861,7 +4884,7 @@ mod test {
             &conn_opts,
             true,
             1,
-            StacksEpoch::unit_test_pre_2_05(0),
+            StacksEpoch::unit_test_up_to(0, StacksEpochId::Epoch20),
         );
 
         for i in 0..5 {
@@ -5025,7 +5048,7 @@ mod test {
                 &burnchain_1,
                 0x9abcdef0,
                 12350,
-                "http://peer1.com".into(),
+                UrlString::from_literal("http://peer1.com"),
                 &[],
                 &[],
                 DEFAULT_SERVICES,
@@ -5036,7 +5059,7 @@ mod test {
                 &burnchain_2,
                 0x9abcdef0,
                 12351,
-                "http://peer2.com".into(),
+                UrlString::from_literal("http://peer2.com"),
                 &[],
                 &[],
                 DEFAULT_SERVICES,
@@ -5072,7 +5095,7 @@ mod test {
             &conn_opts,
             true,
             0,
-            StacksEpoch::unit_test_pre_2_05(0),
+            StacksEpoch::unit_test_up_to(0, StacksEpochId::Epoch20),
         );
         let mut convo_2 = ConversationP2P::new(
             123,
@@ -5082,7 +5105,7 @@ mod test {
             &conn_opts,
             true,
             0,
-            StacksEpoch::unit_test_pre_2_05(0),
+            StacksEpoch::unit_test_up_to(0, StacksEpochId::Epoch20),
         );
 
         // no peer public keys known yet
@@ -5172,7 +5195,7 @@ mod test {
                 &burnchain_1,
                 0x9abcdef0,
                 12350,
-                "http://peer1.com".into(),
+                UrlString::from_literal("http://peer1.com"),
                 &[],
                 &[],
                 DEFAULT_SERVICES,
@@ -5183,7 +5206,7 @@ mod test {
                 &burnchain_2,
                 0x9abcdef0,
                 12351,
-                "http://peer2.com".into(),
+                UrlString::from_literal("http://peer2.com"),
                 &[],
                 &[],
                 DEFAULT_SERVICES,
@@ -5219,7 +5242,7 @@ mod test {
             &conn_opts,
             true,
             0,
-            StacksEpoch::unit_test_pre_2_05(0),
+            StacksEpoch::unit_test_up_to(0, StacksEpochId::Epoch20),
         );
         let mut convo_2 = ConversationP2P::new(
             123,
@@ -5229,7 +5252,7 @@ mod test {
             &conn_opts,
             true,
             0,
-            StacksEpoch::unit_test_pre_2_05(0),
+            StacksEpoch::unit_test_up_to(0, StacksEpochId::Epoch20),
         );
 
         // no peer public keys known yet
@@ -5343,7 +5366,7 @@ mod test {
                     &burnchain_1,
                     0x9abcdef0,
                     12350,
-                    "http://peer1.com".into(),
+                    UrlString::from_literal("http://peer1.com"),
                     &[],
                     &[],
                     DEFAULT_SERVICES,
@@ -5354,7 +5377,7 @@ mod test {
                     &burnchain_2,
                     0x9abcdef0,
                     12351,
-                    "http://peer2.com".into(),
+                    UrlString::from_literal("http://peer2.com"),
                     &[],
                     &[],
                     DEFAULT_SERVICES,
@@ -5390,7 +5413,7 @@ mod test {
                 &conn_opts,
                 true,
                 0,
-                StacksEpoch::unit_test_pre_2_05(0),
+                StacksEpoch::unit_test_up_to(0, StacksEpochId::Epoch20),
             );
             let mut convo_2 = ConversationP2P::new(
                 123,
@@ -5400,7 +5423,7 @@ mod test {
                 &conn_opts,
                 true,
                 0,
-                StacksEpoch::unit_test_pre_2_05(0),
+                StacksEpoch::unit_test_up_to(0, StacksEpochId::Epoch20),
             );
 
             // no peer public keys known yet
@@ -5462,7 +5485,10 @@ mod test {
                         data.handshake.expire_block_height,
                         local_peer_2.private_key_expire
                     );
-                    assert_eq!(data.handshake.data_url, "http://peer2.com".into());
+                    assert_eq!(
+                        data.handshake.data_url,
+                        UrlString::from_literal("http://peer2.com")
+                    );
                     assert_eq!(data.heartbeat_interval, conn_opts.heartbeat);
                 }
                 _ => {
@@ -5615,7 +5641,7 @@ mod test {
                     &burnchain_1,
                     0x9abcdef0,
                     12350,
-                    "http://peer1.com".into(),
+                    UrlString::from_literal("http://peer1.com"),
                     &[],
                     &[],
                     DEFAULT_SERVICES,
@@ -5626,7 +5652,7 @@ mod test {
                     &burnchain_2,
                     0x9abcdef0,
                     12351,
-                    "http://peer2.com".into(),
+                    UrlString::from_literal("http://peer2.com"),
                     &[],
                     &[],
                     DEFAULT_SERVICES,
@@ -5662,7 +5688,7 @@ mod test {
                 &conn_opts,
                 true,
                 0,
-                StacksEpoch::unit_test_pre_2_05(0),
+                StacksEpoch::unit_test_up_to(0, StacksEpochId::Epoch20),
             );
             let mut convo_2 = ConversationP2P::new(
                 123,
@@ -5672,7 +5698,7 @@ mod test {
                 &conn_opts,
                 true,
                 0,
-                StacksEpoch::unit_test_pre_2_05(0),
+                StacksEpoch::unit_test_up_to(0, StacksEpochId::Epoch20),
             );
 
             // no peer public keys known yet
@@ -5734,7 +5760,10 @@ mod test {
                         data.handshake.expire_block_height,
                         local_peer_2.private_key_expire
                     );
-                    assert_eq!(data.handshake.data_url, "http://peer2.com".into());
+                    assert_eq!(
+                        data.handshake.data_url,
+                        UrlString::from_literal("http://peer2.com")
+                    );
                     assert_eq!(data.heartbeat_interval, conn_opts.heartbeat);
                 }
                 _ => {
@@ -5885,7 +5914,7 @@ mod test {
                 &burnchain_1,
                 0x9abcdef0,
                 12352,
-                "http://peer1.com".into(),
+                UrlString::from_literal("http://peer1.com"),
                 &[],
                 &[],
                 DEFAULT_SERVICES,
@@ -5896,7 +5925,7 @@ mod test {
                 &burnchain_2,
                 0x9abcdef0,
                 12353,
-                "http://peer2.com".into(),
+                UrlString::from_literal("http://peer2.com"),
                 &[],
                 &[],
                 DEFAULT_SERVICES,
@@ -5932,7 +5961,7 @@ mod test {
             &conn_opts,
             true,
             0,
-            StacksEpoch::unit_test_pre_2_05(0),
+            StacksEpoch::unit_test_up_to(0, StacksEpochId::Epoch20),
         );
         let mut convo_2 = ConversationP2P::new(
             123,
@@ -5942,7 +5971,7 @@ mod test {
             &conn_opts,
             true,
             0,
-            StacksEpoch::unit_test_pre_2_05(0),
+            StacksEpoch::unit_test_up_to(0, StacksEpochId::Epoch20),
         );
 
         // convo_1 sends natpunch request to convo_2
@@ -6017,7 +6046,7 @@ mod test {
                 &burnchain,
                 0x9abcdef0,
                 12352,
-                "http://peer1.com".into(),
+                UrlString::from_literal("http://peer1.com"),
                 &[],
                 &[],
                 DEFAULT_SERVICES,
@@ -6045,7 +6074,7 @@ mod test {
                 &conn_opts,
                 true,
                 0,
-                StacksEpoch::unit_test_pre_2_05(0),
+                StacksEpoch::unit_test_up_to(0, StacksEpochId::Epoch20),
             );
 
             let ping_data = PingData::new();
@@ -6075,7 +6104,7 @@ mod test {
                 &conn_opts,
                 true,
                 0,
-                StacksEpoch::unit_test_pre_2_05(0),
+                StacksEpoch::unit_test_up_to(0, StacksEpochId::Epoch20),
             );
 
             let ping_data = PingData::new();
@@ -6107,7 +6136,7 @@ mod test {
                 &conn_opts,
                 true,
                 0,
-                StacksEpoch::unit_test_pre_2_05(0),
+                StacksEpoch::unit_test_up_to(0, StacksEpochId::Epoch20),
             );
 
             let ping_data = PingData::new();
@@ -6145,7 +6174,7 @@ mod test {
                 &conn_opts,
                 true,
                 0,
-                StacksEpoch::unit_test_pre_2_05(0),
+                StacksEpoch::unit_test_up_to(0, StacksEpochId::Epoch20),
             );
 
             let ping_data = PingData::new();
@@ -6175,7 +6204,10 @@ mod test {
         // stale peer version max-epoch
         {
             // convo thinks its epoch 2.05
-            let epochs = StacksEpoch::unit_test_2_05(chain_view.burn_block_height - 4);
+            let epochs = StacksEpoch::unit_test_up_to(
+                chain_view.burn_block_height - 4,
+                StacksEpochId::Epoch2_05,
+            );
             let cur_epoch = epochs
                 .epoch_at_height(chain_view.burn_block_height)
                 .unwrap();
@@ -6270,7 +6302,10 @@ mod test {
 
         // 3.3/3.2 compatibility: allow peers that still report 3.2 in epoch 3.3.
         {
-            let epochs = StacksEpoch::unit_test_3_3(chain_view.burn_block_height - 40);
+            let epochs = StacksEpoch::unit_test_up_to(
+                chain_view.burn_block_height - 40,
+                StacksEpochId::Epoch33,
+            );
             let cur_epoch = epochs
                 .epoch_at_height(chain_view.burn_block_height)
                 .unwrap();
@@ -6363,7 +6398,7 @@ mod test {
             &conn_opts,
             true,
             0,
-            StacksEpoch::unit_test_pre_2_05(0),
+            StacksEpoch::unit_test_up_to(0, StacksEpochId::Epoch20),
         );
 
         let payload = StacksMessageType::Nack(NackData { error_code: 123 });
@@ -6737,7 +6772,7 @@ mod test {
             &burnchain,
             0x9abcdef0,
             12352,
-            "http://peer1.com".into(),
+            UrlString::from_literal("http://peer1.com"),
             &[],
             &[],
             DEFAULT_SERVICES,
@@ -6763,7 +6798,7 @@ mod test {
             &conn_opts,
             true,
             0,
-            StacksEpoch::unit_test_pre_2_05(0),
+            StacksEpoch::unit_test_up_to(0, StacksEpochId::Epoch20),
         );
 
         let payload = StacksMessageType::Nack(NackData { error_code: 123 });
@@ -6851,7 +6886,7 @@ mod test {
             &burnchain,
             0x9abcdef0,
             12352,
-            "http://peer1.com".into(),
+            UrlString::from_literal("http://peer1.com"),
             &[],
             &[],
             DEFAULT_SERVICES,
@@ -6877,7 +6912,7 @@ mod test {
             &conn_opts,
             true,
             0,
-            StacksEpoch::unit_test_pre_2_05(0),
+            StacksEpoch::unit_test_up_to(0, StacksEpochId::Epoch20),
         );
 
         let payload = StacksMessageType::Nack(NackData { error_code: 123 });
@@ -6890,8 +6925,10 @@ mod test {
 
     #[test]
     fn test_validate_block_push() {
-        let mut conn_opts = ConnectionOptions::default();
-        conn_opts.max_block_push_bandwidth = 100;
+        let conn_opts = ConnectionOptions {
+            max_block_push_bandwidth: 100,
+            ..Default::default()
+        };
 
         let socketaddr_1 = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4)), 8081);
 
@@ -6918,7 +6955,7 @@ mod test {
             &burnchain,
             0x9abcdef0,
             12352,
-            "http://peer1.com".into(),
+            UrlString::from_literal("http://peer1.com"),
             &[],
             &[],
             DEFAULT_SERVICES,
@@ -6944,7 +6981,7 @@ mod test {
             &conn_opts,
             true,
             0,
-            StacksEpoch::unit_test_pre_2_05(0),
+            StacksEpoch::unit_test_up_to(0, StacksEpochId::Epoch20),
         );
 
         // NOTE: payload can be anything since we only look at premable length here
@@ -7017,8 +7054,10 @@ mod test {
 
     #[test]
     fn test_validate_transaction_push() {
-        let mut conn_opts = ConnectionOptions::default();
-        conn_opts.max_transaction_push_bandwidth = 100;
+        let conn_opts = ConnectionOptions {
+            max_transaction_push_bandwidth: 100,
+            ..Default::default()
+        };
 
         let socketaddr_1 = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4)), 8081);
 
@@ -7045,7 +7084,7 @@ mod test {
             &burnchain,
             0x9abcdef0,
             12352,
-            "http://peer1.com".into(),
+            UrlString::from_literal("http://peer1.com"),
             &[],
             &[],
             DEFAULT_SERVICES,
@@ -7071,7 +7110,7 @@ mod test {
             &conn_opts,
             true,
             0,
-            StacksEpoch::unit_test_pre_2_05(0),
+            StacksEpoch::unit_test_up_to(0, StacksEpochId::Epoch20),
         );
 
         // NOTE: payload can be anything since we only look at premable length here
@@ -7144,8 +7183,10 @@ mod test {
 
     #[test]
     fn test_validate_microblocks_push() {
-        let mut conn_opts = ConnectionOptions::default();
-        conn_opts.max_microblocks_push_bandwidth = 100;
+        let conn_opts = ConnectionOptions {
+            max_microblocks_push_bandwidth: 100,
+            ..Default::default()
+        };
 
         let socketaddr_1 = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4)), 8081);
 
@@ -7172,7 +7213,7 @@ mod test {
             &burnchain,
             0x9abcdef0,
             12352,
-            "http://peer1.com".into(),
+            UrlString::from_literal("http://peer1.com"),
             &[],
             &[],
             DEFAULT_SERVICES,
@@ -7198,7 +7239,7 @@ mod test {
             &conn_opts,
             true,
             0,
-            StacksEpoch::unit_test_pre_2_05(0),
+            StacksEpoch::unit_test_up_to(0, StacksEpochId::Epoch20),
         );
 
         // NOTE: payload can be anything since we only look at premable length here
@@ -7271,8 +7312,10 @@ mod test {
 
     #[test]
     fn test_validate_stackerdb_push() {
-        let mut conn_opts = ConnectionOptions::default();
-        conn_opts.max_stackerdb_push_bandwidth = 100;
+        let conn_opts = ConnectionOptions {
+            max_stackerdb_push_bandwidth: 100,
+            ..Default::default()
+        };
 
         let socketaddr_1 = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4)), 8081);
 
@@ -7299,7 +7342,7 @@ mod test {
             &burnchain,
             0x9abcdef0,
             12352,
-            "http://peer1.com".into(),
+            UrlString::from_literal("http://peer1.com"),
             &[],
             &[],
             DEFAULT_SERVICES,
@@ -7325,7 +7368,7 @@ mod test {
             &conn_opts,
             true,
             0,
-            StacksEpoch::unit_test_pre_2_05(0),
+            StacksEpoch::unit_test_up_to(0, StacksEpochId::Epoch20),
         );
 
         // NOTE: payload can be anything since we only look at premable length here
@@ -7394,5 +7437,38 @@ mod test {
             .unwrap()
             .is_some());
         assert_eq!(convo_1.stats.msgs_err, err_before);
+    }
+
+    #[test]
+    fn test_get_bandwidth() {
+        let recently = get_epoch_time_secs() - 1;
+        let longer_ago = recently - 6;
+
+        let mut counts = VecDeque::<(u64, u64)>::new();
+        counts.push_back((recently, 54));
+        counts.push_back((longer_ago, 18));
+        assert_eq!(
+            NeighborStats::get_bandwidth(&counts, 1000),
+            72f64,
+            "non-monotonous timestamps should be treated like 1 second apart"
+        );
+
+        let mut counts = VecDeque::<(u64, u64)>::new();
+        counts.push_back((recently, 54));
+        counts.push_back((recently, 18));
+        assert_eq!(
+            NeighborStats::get_bandwidth(&counts, 1000),
+            72f64,
+            "identical timestamps should be treated like 1 second apart"
+        );
+
+        let mut counts = VecDeque::<(u64, u64)>::new();
+        counts.push_back((longer_ago, 54));
+        counts.push_back((recently, 18));
+        assert_eq!(
+            NeighborStats::get_bandwidth(&counts, 1000),
+            12f64, // 72 divided by 6
+            "properly ordered timestamps should be handled correctly"
+        );
     }
 }

@@ -14,8 +14,8 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::cmp::{self, Ordering};
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::cmp::Ordering;
+use std::collections::{HashSet, VecDeque};
 use std::hash::Hasher;
 use std::io::{Read, Write};
 use std::ops::{Deref, DerefMut};
@@ -61,10 +61,10 @@ use crate::cost_estimates::{CostEstimator, EstimatorError};
 use crate::monitoring::increment_stx_mempool_gc;
 use crate::net::api::postblock_proposal::{BlockValidateOk, BlockValidateReject};
 use crate::net::Error as net_error;
-use crate::util_lib::bloom::{BloomCounter, BloomFilter, BloomNodeHasher};
+use crate::util_lib::bloom::{bloom_hash_count, BloomCounter, BloomFilter, BloomNodeHasher};
 use crate::util_lib::db::{
-    query_int, query_row, query_row_columns, query_rows, sqlite_open, table_exists,
-    tx_begin_immediate, u64_to_sql, DBConn, DBTx, Error as db_error, Error, FromColumn, FromRow,
+    query_int, query_row, query_rows, sqlite_open, table_exists, tx_begin_immediate, u64_to_sql,
+    DBConn, DBTx, Error as db_error, Error, FromColumn, FromRow,
 };
 use crate::{cost_estimates, monitoring};
 
@@ -155,6 +155,26 @@ pub enum MempoolIterationStopReason {
     IteratorExited,
 }
 
+impl MempoolIterationStopReason {
+    /// Report the stop reason to Prometheus monitoring.
+    ///
+    /// `IteratorExited` is not reported here because the miner's
+    /// `iterate_candidates` callback already reports the specific reason
+    /// it returned early (Preempted, LimitReached, or DeadlineReached).
+    pub fn report_to_monitoring(&self) {
+        let reason = match self {
+            MempoolIterationStopReason::NoMoreCandidates => {
+                monitoring::MinerStopReason::NoTransactions
+            }
+            MempoolIterationStopReason::DeadlineReached => {
+                monitoring::MinerStopReason::DeadlineReached
+            }
+            MempoolIterationStopReason::IteratorExited => return,
+        };
+        monitoring::increment_miner_stop_reason(reason);
+    }
+}
+
 impl StacksMessageCodec for MemPoolSyncData {
     fn consensus_serialize<W: Write>(&self, fd: &mut W) -> Result<(), codec_error> {
         match *self {
@@ -179,6 +199,16 @@ impl StacksMessageCodec for MemPoolSyncData {
         )))? {
             MemPoolSyncDataID::BloomFilter => {
                 let bloom_filter: BloomFilter<BloomNodeHasher> = read_next(fd)?;
+
+                // hash parameters must be valid for the mempool
+                let (_, num_hashes) =
+                    bloom_hash_count(BLOOM_COUNTER_ERROR_RATE, MAX_BLOOM_COUNTER_TXS);
+                if bloom_filter.num_hashes > num_hashes {
+                    return Err(codec_error::DeserializeError(format!(
+                        "Too many bloom hashers (max {})",
+                        num_hashes
+                    )));
+                }
                 Ok(MemPoolSyncData::BloomFilter(bloom_filter))
             }
             MemPoolSyncDataID::TxTags => {
@@ -310,12 +340,6 @@ pub struct MemPoolAdmitter {
     cur_consensus_hash: ConsensusHash,
 }
 
-enum MemPoolWalkResult {
-    Chainstate(ConsensusHash, BlockHeaderHash, u64, u64),
-    NoneAtCoinbaseHeight(ConsensusHash, BlockHeaderHash, u64),
-    Done,
-}
-
 impl MemPoolAdmitter {
     pub fn new(cur_block: BlockHeaderHash, cur_consensus_hash: ConsensusHash) -> MemPoolAdmitter {
         MemPoolAdmitter {
@@ -366,13 +390,6 @@ pub struct ConsiderTransaction {
     /// If `update_estimator` is set, the iteration should update the estimator
     /// after considering the tx.
     pub update_estimate: bool,
-}
-
-enum ConsiderTransactionResult {
-    NoTransactions,
-    UpdateNonces(Vec<StacksAddress>),
-    /// This transaction should be considered for inclusion in the block.
-    Consider(ConsiderTransaction),
 }
 
 impl std::fmt::Display for MemPoolDropReason {
@@ -1138,12 +1155,6 @@ impl CandidateCache {
     fn len(&self) -> usize {
         self.cache.len() + self.next.len()
     }
-
-    /// Is the cache empty?
-    #[cfg_attr(test, mutants::skip)]
-    fn is_empty(&self) -> bool {
-        self.cache.is_empty() && self.next.is_empty()
-    }
 }
 
 /// Evaluates the pair of nonces, to determine an order
@@ -1465,27 +1476,6 @@ impl MemPoolDB {
         Ok(())
     }
 
-    /// Find the origin addresses who have sent the highest-fee transactions
-    fn find_origin_addresses_by_descending_fees(
-        &self,
-        start_coinbase_height: i64,
-        end_coinbase_height: i64,
-        min_fees: u64,
-        offset: u32,
-        count: u32,
-    ) -> Result<Vec<StacksAddress>, db_error> {
-        let sql = "SELECT DISTINCT origin_address FROM mempool WHERE height > ?1 AND height <= ?2 AND tx_fee >= ?3
-                   ORDER BY tx_fee DESC LIMIT ?4 OFFSET ?5";
-        let args = params![
-            start_coinbase_height,
-            end_coinbase_height,
-            u64_to_sql(min_fees)?,
-            count,
-            offset,
-        ];
-        query_row_columns(self.conn(), sql, args, "origin_address")
-    }
-
     /// Add estimated fee rates to the mempool rate table using
     /// the mempool's configured `CostMetric` and `CostEstimator`. Will update
     /// at most `max_updates` entries in the database before returning.
@@ -1534,25 +1524,6 @@ impl MemPoolDB {
         sql_tx.commit()?;
 
         Ok(updated)
-    }
-
-    /// Helper method to record nonces to a retry-buffer.
-    /// This is needed for when we try to write-through a new (address, nonce) pair to the on-disk
-    /// `nonces` cache, but the write fails due to lock contention from another thread.  The
-    /// retry-buffer will be used to later store this data in a single transaction.
-    fn save_nonce_for_retry(
-        retry_store: &mut HashMap<StacksAddress, u64>,
-        max_size: u64,
-        addr: StacksAddress,
-        new_nonce: u64,
-    ) {
-        if (retry_store.len() as u64) < max_size {
-            if let Some(nonce) = retry_store.get_mut(&addr) {
-                *nonce = cmp::max(new_nonce, *nonce);
-            } else {
-                retry_store.insert(addr, new_nonce);
-            }
-        }
     }
 
     /// Iterate over candidates in the mempool
@@ -1744,9 +1715,6 @@ impl MemPoolDB {
                                                 !start_with_no_estimate,
                                             ),
                                             None => {
-                                                monitoring::increment_miner_stop_reason(
-                                                    monitoring::MinerStopReason::NoTransactions,
-                                                );
                                                 break MempoolIterationStopReason::NoMoreCandidates;
                                             }
                                         }
@@ -1763,9 +1731,6 @@ impl MemPoolDB {
                                 (tx, update_estimate)
                             }
                             None => {
-                                monitoring::increment_miner_stop_reason(
-                                    monitoring::MinerStopReason::NoTransactions,
-                                );
                                 break MempoolIterationStopReason::NoMoreCandidates;
                             }
                         }
@@ -1970,6 +1935,8 @@ impl MemPoolDB {
 
         // Write through the nonce cache to the database
         nonce_cache.flush(&mut self.db);
+
+        stop_reason.report_to_monitoring();
 
         info!(
             "Mempool iteration finished";
@@ -2452,9 +2419,9 @@ impl MemPoolDB {
     /// we're in:
     /// * In epoch 2.x, these are the Stacks chain tip.
     /// * In Nakamoto, these will be resolved to the tenure-start block of the tenure in which this
-    /// Stacks block lies.  The reason for this is because of how the mempool performs
-    /// garbage collection in its DB and bloom filter -- the latter of which is used for mempool
-    /// sync.
+    ///   Stacks block lies.  The reason for this is because of how the mempool performs
+    ///   garbage collection in its DB and bloom filter -- the latter of which is used for mempool
+    ///   sync.
     ///
     /// No action is required by te caller to handle this discrepancy; the caller should just submit
     /// the canonical Stacks tip.  If the current epoch is a Nakamoto epoch, it will be resolved to

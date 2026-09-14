@@ -155,14 +155,12 @@ fn handle_define_function(
         signature
             .split_first()
             .ok_or(RuntimeCheckErrorKind::Unreachable(
-                "Define function bad signature".to_string(),
+                "Define function bad signature".into(),
             ))?;
 
     let function_name = function_symbol
         .match_atom()
-        .ok_or(RuntimeCheckErrorKind::Unreachable(
-            "Expected name".to_string(),
-        ))?;
+        .ok_or(RuntimeCheckErrorKind::Unreachable("Expected name".into()))?;
 
     check_legal_define(function_name, invoke_ctx.contract_context)?;
 
@@ -511,12 +509,12 @@ pub fn evaluate_define(
 #[cfg(test)]
 mod test {
     use clarity_types::Value;
-    use clarity_types::errors::RuntimeCheckErrorKind;
     use clarity_types::representations::SymbolicExpression;
     use clarity_types::types::QualifiedContractIdentifier;
     use stacks_common::consts::CHAIN_ID_TESTNET;
     use stacks_common::types::StacksEpochId;
 
+    use crate::vm::analysis::errors::RuntimeCheckErrorKind;
     use crate::vm::analysis::type_checker::v2_1::MAX_FUNCTION_PARAMETERS;
     use crate::vm::callables::DefineType;
     use crate::vm::contexts::{ExecutionState, GlobalContext, InvocationContext};
@@ -525,7 +523,7 @@ mod test {
     use crate::vm::errors::VmExecutionError;
     use crate::vm::functions::define::{handle_define_function, handle_define_trait};
     use crate::vm::tests::test_clarity_versions;
-    use crate::vm::{CallStack, ClarityVersion, ContractContext, LocalContext};
+    use crate::vm::{CallStack, ClarityVersion, ContractContext};
 
     #[apply(test_clarity_versions)]
     fn bad_syntax_binding_define_function(
@@ -534,9 +532,11 @@ mod test {
     ) {
         // ---- BAD SIGNATURE ----
         // Instead of ((x uint)), we pass (x)
+
+        use clarity_types::ClarityName;
         let bad_signature = vec![
-            SymbolicExpression::atom("f".into()),
-            SymbolicExpression::atom("x".into()), // NOT a (name type) list
+            SymbolicExpression::atom(ClarityName::from_literal("f")),
+            SymbolicExpression::atom(ClarityName::from_literal("x")), // NOT a (name type) list
         ];
 
         let body = SymbolicExpression::atom_value(Value::UInt(1));
@@ -553,7 +553,6 @@ mod test {
         let contract_context =
             ContractContext::new(QualifiedContractIdentifier::transient(), version);
 
-        let context = LocalContext::new();
         let mut call_stack = CallStack::new();
 
         let mut exec_state = ExecutionState {
@@ -578,7 +577,7 @@ mod test {
 
         assert_eq!(
             VmExecutionError::RuntimeCheck(RuntimeCheckErrorKind::Unreachable(
-                "Bad syntax binding: NotList(Eval, 0)".to_string()
+                "Bad syntax binding: NotList(Eval, 0)".into()
             )),
             err,
         );
@@ -589,21 +588,25 @@ mod test {
         #[case] version: ClarityVersion,
         #[case] epoch: StacksEpochId,
     ) {
+        use clarity_types::ClarityName;
+
         if epoch < StacksEpochId::Epoch33 {
             return;
         }
         // Build a trait method with MORE than MAX_FUNCTION_PARAMETERS arguments
         // (f (uint uint uint ... ) (response uint uint))
-        let too_many_args =
-            vec![SymbolicExpression::atom("uint".into()); MAX_FUNCTION_PARAMETERS + 1];
+        let too_many_args = vec![
+            SymbolicExpression::atom(ClarityName::from_literal("uint"));
+            MAX_FUNCTION_PARAMETERS + 1
+        ];
 
         let method = SymbolicExpression::list(vec![
-            SymbolicExpression::atom("f".into()),
+            SymbolicExpression::atom(ClarityName::from_literal("f")),
             SymbolicExpression::list(too_many_args),
             SymbolicExpression::list(vec![
-                SymbolicExpression::atom("response".into()),
-                SymbolicExpression::atom("uint".into()),
-                SymbolicExpression::atom("uint".into()),
+                SymbolicExpression::atom(ClarityName::from_literal("response")),
+                SymbolicExpression::atom(ClarityName::from_literal("uint")),
+                SymbolicExpression::atom(ClarityName::from_literal("uint")),
             ]),
         ]);
 
@@ -636,7 +639,7 @@ mod test {
         };
 
         let err = handle_define_trait(
-            &"bad-trait".into(),
+            &ClarityName::from_literal("bad-trait"),
             &trait_body,
             &mut exec_state,
             &invoke_ctx,
@@ -645,7 +648,7 @@ mod test {
 
         assert_eq!(
             VmExecutionError::RuntimeCheck(RuntimeCheckErrorKind::Unreachable(
-                "Too many function params: found 257, allowed 256".to_string()
+                "Too many function params: found 257, allowed 256".into()
             )),
             err
         );

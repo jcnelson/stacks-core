@@ -111,7 +111,7 @@ pub fn set_last_execution_cost_observed(
         prometheus::LAST_BLOCK_READ_COUNT
             .set(execution_cost.read_count as f64 / block_limit.read_count as f64);
         prometheus::LAST_BLOCK_WRITE_COUNT
-            .set(execution_cost.write_count as f64 / block_limit.read_count as f64);
+            .set(execution_cost.write_count as f64 / block_limit.write_count as f64);
         prometheus::LAST_BLOCK_READ_LENGTH
             .set(execution_cost.read_length as f64 / block_limit.read_length as f64);
         prometheus::LAST_BLOCK_WRITE_LENGTH
@@ -141,7 +141,7 @@ pub fn set_last_mined_execution_cost_observed(
         prometheus::LAST_MINED_BLOCK_READ_COUNT
             .set(execution_cost.read_count as f64 / block_limit.read_count as f64);
         prometheus::LAST_MINED_BLOCK_WRITE_COUNT
-            .set(execution_cost.write_count as f64 / block_limit.read_count as f64);
+            .set(execution_cost.write_count as f64 / block_limit.write_count as f64);
         prometheus::LAST_MINED_BLOCK_READ_LENGTH
             .set(execution_cost.read_length as f64 / block_limit.read_length as f64);
         prometheus::LAST_MINED_BLOCK_WRITE_LENGTH
@@ -183,6 +183,13 @@ pub fn increment_warning_emitted_counter() {
 pub fn increment_errors_emitted_counter() {
     #[cfg(feature = "monitoring_prom")]
     prometheus::ERRORS_EMITTED_COUNTER.inc();
+}
+
+pub fn increment_unreachable_errors_counter(_error_type: &str) {
+    #[cfg(feature = "monitoring_prom")]
+    prometheus::UNREACHABLE_ERRORS_COUNTER
+        .with_label_values(&[_error_type])
+        .inc();
 }
 
 fn txid_tracking_db(chainstate_root_path: &str) -> Result<DBConn, DatabaseError> {

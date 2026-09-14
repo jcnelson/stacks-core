@@ -17,6 +17,13 @@
 ### Checklist
 
 - [ ] Test coverage for new or modified code paths
-- [ ] Changelog fragment(s) or "no changelog" label added (see [`changelog.d/README.md`](changelog.d/README.md))
-- [ ] Required documentation changes (e.g., `docs/rpc/openapi.yaml` and `rpc-endpoints.md` for v2 endpoints, `event-dispatcher.md` for new events)
+- [ ] For new Clarity features or consensus changes, add property tests (see
+      [`docs/property-testing.md`](/docs/property-testing.md))
+- [ ] Changelog fragment(s) or "no changelog" label added (see
+      [`changelog.d/README.md`](changelog.d/README.md)). If this PR breaks
+      anything for node operators or users, or requires them to manually do
+      anything (such as adjust a setting), use the breaking category.
+- [ ] Required documentation changes (e.g.,
+      [`rpc/openapi.yaml`](/docs/rpc/openapi.yaml) for RPC endpoints,
+      [`event-dispatcher.md`](/docs/event-dispatcher.md) for new events)
 - [ ] New clarity functions have corresponding PR in `clarity-benchmarking` repo
