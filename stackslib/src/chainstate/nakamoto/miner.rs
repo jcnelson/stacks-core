@@ -1,5 +1,5 @@
 // Copyright (C) 2013-2020 Blockstack PBC, a public benefit corporation
-// Copyright (C) 2020 Stacks Open Internet Foundation
+// Copyright (C) 2020-2026 Stacks Open Internet Foundation
 //
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
@@ -14,6 +14,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+use clarity::vm::clarity::ClarityError;
 use clarity::vm::costs::ExecutionCost;
 use stacks_common::types::chainstate::{
     BlockHeaderHash, BurnchainHeaderHash, ConsensusHash, StacksBlockId,
@@ -33,7 +34,8 @@ use crate::chainstate::stacks::db::{
     ChainstateTx, ClarityTx, StacksBlockHeaderTypes, StacksChainState, StacksHeaderInfo,
 };
 use crate::chainstate::stacks::miner::{
-    BlockBuilder, BlockBuilderSettings, BlockLimitFunction, TransactionEvent, TransactionResult,
+    BlockBuilder, BlockBuilderSettings, BlockLimitFunction, TransactionEvent,
+    TransactionResourceBudgets, TransactionResult,
 };
 use crate::chainstate::stacks::{Error, StacksBlockHeader, *};
 use crate::clarity_vm::clarity::ClarityInstance;
@@ -45,7 +47,7 @@ use crate::monitoring::{
 };
 use crate::net::relay::Relayer;
 
-/// Nakamaoto tenure information
+/// Nakamoto tenure information
 #[derive(Debug, Default)]
 pub struct NakamotoTenureInfo {
     /// Coinbase tx, if this is a new tenure
@@ -246,12 +248,12 @@ impl NakamotoBlockBuilder {
     /// * `parent_stacker_header` - the stacks header this builder's block will build off
     ///
     /// * `tenure_id_consensus_hash` - consensus hash of this tenure's burnchain block.
-    ///    This is the consensus hash that goes into the block header.
+    ///   This is the consensus hash that goes into the block header.
     ///
     /// * `total_burn` - total BTC burnt so far in this fork.
     ///
     /// * `tenure_change` - the TenureChange tx if this is going to start or
-    ///    extend a tenure
+    ///   extend a tenure
     ///
     /// * `coinbase` - the coinbase tx if this is going to start a new tenure
     ///
@@ -457,11 +459,13 @@ impl NakamotoBlockBuilder {
         };
 
         let parent_block_id = StacksBlockId::new(&parent_consensus_hash, &parent_header_hash);
-        let parent_coinbase_height =
-            NakamotoChainState::get_coinbase_height(&mut chainstate.index_conn(), &parent_block_id)
-                .ok()
-                .flatten()
-                .unwrap_or(0);
+        let parent_coinbase_height = NakamotoChainState::get_coinbase_height_at(
+            &mut chainstate.index_conn(),
+            &parent_block_id,
+        )
+        .ok()
+        .flatten()
+        .unwrap_or(0);
 
         let is_new_tenure = cause.is_new_tenure();
         let coinbase_height = if is_new_tenure {
@@ -590,6 +594,11 @@ impl NakamotoBlockBuilder {
 
         self.header.tx_merkle_root = tx_merkle_root;
         self.header.state_index_root = state_root_hash;
+        // Keep the shadow bit, but set the version to the expected version for
+        // this epoch.
+        let shadow_flag = self.header.version & 0x80;
+        self.header.version =
+            NakamotoBlockHeader::expected_version_for_epoch(clarity_tx.get_epoch()) | shadow_flag;
 
         let block = NakamotoBlock {
             header: self.header.clone(),
@@ -651,7 +660,6 @@ impl NakamotoBlockBuilder {
         settings: BlockBuilderSettings,
         event_observer: Option<&dyn MemPoolEventDispatcher>,
         signer_bitvec_len: u16,
-        replay_transactions: &[StacksTransaction],
     ) -> Result<BlockMetadata, Error> {
         let (tip_consensus_hash, tip_block_hash, tip_height) = (
             parent_stacks_header.consensus_hash.clone(),
@@ -736,7 +744,6 @@ impl NakamotoBlockBuilder {
             &initial_txs,
             settings,
             event_observer,
-            replay_transactions,
         ) {
             Ok(x) => x,
             Err(e) => {
@@ -806,7 +813,7 @@ impl BlockBuilder for NakamotoBlockBuilder {
         tx: &StacksTransaction,
         tx_len: u64,
         limit_behavior: &BlockLimitFunction,
-        max_execution_time: Option<std::time::Duration>,
+        resource_budgets: &TransactionResourceBudgets,
         total_receipts_size: &mut u64,
     ) -> TransactionResult {
         if self.bytes_so_far + tx_len >= u64::from(MAX_EPOCH_SIZE) {
@@ -853,13 +860,12 @@ impl BlockBuilder for NakamotoBlockBuilder {
         };
 
         let quiet = !cfg!(test);
+        let is_mainnet = clarity_tx.config.mainnet;
         let result = {
             // preemptively skip problematic transactions
-            if let Err(e) = Relayer::static_check_problematic_relayed_tx(
-                clarity_tx.config.mainnet,
-                clarity_tx.get_epoch(),
-                tx,
-            ) {
+            if let Err(e) =
+                Relayer::static_check_problematic_relayed_tx(is_mainnet, clarity_tx.get_epoch(), tx)
+            {
                 info!(
                     "Detected problematic tx {} while mining; dropping from mempool",
                     tx.txid()
@@ -872,8 +878,21 @@ impl BlockBuilder for NakamotoBlockBuilder {
                 clarity_tx,
                 tx,
                 quiet,
-                max_execution_time,
+                resource_budgets,
                 |receipt| {
+                    if !receipt.post_condition_aborted {
+                        let all_events_valid = receipt.events.iter().all(|event| {
+                            crate::net::api::postblock_proposal::is_event_pox_addr_valid(
+                                is_mainnet, event,
+                            )
+                        });
+                        if !all_events_valid {
+                            return Err(Error::ClarityError(ClarityError::BadTransaction(
+                                "All PoX events were not valid".into(),
+                            )));
+                        }
+                    };
+
                     let size = receipt.size().ok_or_else(|| {
                         Error::InvalidStacksBlock("Could not calculate receipt size".into())
                     })?;
@@ -937,18 +956,19 @@ fn parse_process_transaction_error(
         TransactionResult::problematic(tx, e)
     } else {
         match e {
-            Error::CostOverflowError(cost_before, cost_after, total_budget) => {
-                clarity_tx.reset_cost(cost_before.clone());
+            Error::CostOverflowError(context) => {
+                clarity_tx.reset_cost(context.before.clone());
                 let cost_so_far_percentage =
-                    total_budget.proportion_largest_dimension(&cost_before);
+                    context.budget.proportion_largest_dimension(&context.before);
                 if cost_so_far_percentage < TX_BLOCK_LIMIT_PROPORTION_HEURISTIC {
                     warn!(
-                            "Transaction {} consumed over {}% of block budget, marking as invalid; budget was {total_budget}",
+                            "Transaction {} consumed over {}% of block budget, marking as invalid; budget was {}",
                             tx.txid(),
-                            100 - TX_BLOCK_LIMIT_PROPORTION_HEURISTIC
+                            100 - TX_BLOCK_LIMIT_PROPORTION_HEURISTIC,
+                            context.budget,
                     );
-                    let mut measured_cost = cost_after;
-                    let measured_cost = if measured_cost.sub(&cost_before).is_ok() {
+                    let mut measured_cost = context.after;
+                    let measured_cost = if measured_cost.sub(&context.before).is_ok() {
                         Some(measured_cost)
                     } else {
                         warn!("Failed to compute measured cost of a too big transaction");
@@ -959,13 +979,15 @@ fn parse_process_transaction_error(
                     warn!(
                         "Transaction {} would exceed the tenure budget, but only {cost_so_far_percentage}% of total budget currently consumed. Skipping tx for this block.", tx.txid();
                         "contract_limit_percentage" => contract_limit_percentage,
-                        "total_budget" => %total_budget
+                        "total_budget" => %context.budget
                     );
                     TransactionResult::skipped_due_to_error(tx, Error::BlockCostLimitError)
                 } else {
                     warn!(
-                        "Transaction {} reached block cost {cost_after}; budget was {total_budget}",
+                        "Transaction {} reached block cost {}; budget was {}",
                         tx.txid(),
+                        context.after,
+                        context.budget,
                     );
                     TransactionResult::skipped_due_to_error(tx, Error::BlockTooBigError)
                 }

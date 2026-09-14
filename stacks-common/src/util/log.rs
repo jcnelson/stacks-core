@@ -15,7 +15,6 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use std::io::Write;
-use std::time::{Duration, SystemTime};
 use std::{env, io, thread};
 
 use chrono::prelude::*;
@@ -41,21 +40,18 @@ fn print_msg_header(mut rd: &mut dyn RecordDecorator, record: &Record) -> io::Re
     write!(rd, " ")?;
 
     rd.start_timestamp()?;
-    let system_time = SystemTime::now();
     match &*STACKS_LOG_FORMAT_TIME {
         None => {
-            let elapsed = system_time
-                .duration_since(SystemTime::UNIX_EPOCH)
-                .unwrap_or(Duration::from_secs(0));
+            let now = Utc::now();
             write!(
                 rd,
                 "[{:5}.{:06}]",
-                elapsed.as_secs(),
-                elapsed.subsec_micros()
+                now.timestamp(),
+                now.timestamp_subsec_micros()
             )?;
         }
         Some(ref format) => {
-            let datetime: DateTime<Local> = system_time.into();
+            let datetime: DateTime<Local> = Local::now();
             write!(rd, "[{}]", datetime.format(format))?;
         }
     }
@@ -280,7 +276,7 @@ macro_rules! trace {
     ($($arg:tt)*) => ({
         let cur_level = $crate::util::log::get_loglevel();
         if slog::Level::Trace.is_at_least(cur_level) {
-            slog::slog_trace!($crate::util::log::LOGGER, $($arg)*)
+            slog::trace!($crate::util::log::LOGGER, $($arg)*)
         }
     })
 }
@@ -290,7 +286,7 @@ macro_rules! error {
     ($($arg:tt)*) => ({
         let cur_level = $crate::util::log::get_loglevel();
         if slog::Level::Error.is_at_least(cur_level) {
-            slog::slog_error!($crate::util::log::LOGGER, $($arg)*)
+            slog::error!($crate::util::log::LOGGER, $($arg)*)
         }
     })
 }
@@ -300,7 +296,7 @@ macro_rules! warn {
     ($($arg:tt)*) => ({
         let cur_level = $crate::util::log::get_loglevel();
         if slog::Level::Warning.is_at_least(cur_level) {
-            slog::slog_warn!($crate::util::log::LOGGER, $($arg)*)
+            slog::warn!($crate::util::log::LOGGER, $($arg)*)
         }
     })
 }
@@ -310,7 +306,7 @@ macro_rules! info {
     ($($arg:tt)*) => ({
         let cur_level = $crate::util::log::get_loglevel();
         if slog::Level::Info.is_at_least(cur_level) {
-            slog::slog_info!($crate::util::log::LOGGER, $($arg)*)
+            slog::info!($crate::util::log::LOGGER, $($arg)*)
         }
     })
 }
@@ -320,7 +316,7 @@ macro_rules! debug {
     ($($arg:tt)*) => ({
         let cur_level = $crate::util::log::get_loglevel();
         if slog::Level::Debug.is_at_least(cur_level) {
-            slog::slog_debug!($crate::util::log::LOGGER, $($arg)*)
+            slog::debug!($crate::util::log::LOGGER, $($arg)*)
         }
     })
 }

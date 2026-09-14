@@ -17,6 +17,7 @@
 use std::collections::{HashMap, HashSet};
 
 use clarity_types::representations::ClarityName;
+use stacks_common::types::StacksEpochId;
 
 use crate::vm::ClarityVersion;
 use crate::vm::ast::errors::{ParseError, ParseErrorKind, ParseResult};
@@ -37,13 +38,15 @@ mod tests;
 pub struct DefinitionSorter {
     graph: Graph,
     top_level_expressions_map: HashMap<ClarityName, TopLevelExpressionIndex>,
+    epoch: StacksEpochId,
 }
 
 impl DefinitionSorter {
-    fn new() -> Self {
+    fn new(epoch: StacksEpochId) -> Self {
         Self {
             top_level_expressions_map: HashMap::new(),
             graph: Graph::new(),
+            epoch,
         }
     }
 
@@ -51,8 +54,9 @@ impl DefinitionSorter {
         contract_ast: &mut ContractAST,
         accounting: &mut T,
         version: ClarityVersion,
+        epoch: StacksEpochId,
     ) -> ParseResult<()> {
-        let mut pass = DefinitionSorter::new();
+        let mut pass = DefinitionSorter::new(epoch);
         pass.run(contract_ast, accounting, version)?;
         Ok(())
     }
@@ -237,11 +241,14 @@ impl DefinitionSorter {
                         {
                             match native_function {
                                 NativeFunctions::ContractCall => {
-                                    // Args: [contract-name, function-name, ...]: ignore contract-name, function-name, handle rest
-                                    if function_args.len() > 2 {
-                                        for expr in function_args[2..].iter() {
-                                            self.probe_for_dependencies(expr, tle_index, version)?;
+                                    // Args: [contract-name, function-name, ...]: Always ignore function-name because it's not
+                                    // a dependency *in this contract*. Handle contract-name beginning in Epoch 4.1, see
+                                    // `should_skip_contract_call_argument` for details. Always handle the rest.
+                                    for (index, expr) in function_args.iter().enumerate() {
+                                        if self.should_skip_contract_call_argument(index) {
+                                            continue;
                                         }
+                                        self.probe_for_dependencies(expr, tle_index, version)?;
                                     }
                                     return Ok(());
                                 }
@@ -394,6 +401,24 @@ impl DefinitionSorter {
         let tle_name = defined_name.match_atom()?;
         Some((tle_name.clone(), defined_name.id, defined_name))
     }
+
+    /// When probing dependencies of a `contract-call?` invocation, should
+    /// the argument with the given index be ignored? The signature is
+    /// `(contract-call? contract-principal function-name other-args...)`,
+    /// so `contract-principal` is index 0 and `function-name` is index 1.
+    fn should_skip_contract_call_argument(&self, argument_index: usize) -> bool {
+        if self.epoch.checks_dependency_of_contract_call_target() {
+            // only skip argument 1, the function name (because it doesn't
+            // refer to a name in the current contract, but in the called contract)
+            argument_index == 1
+        } else {
+            // also skip argument 0, the target contract, because that is
+            // the legacy behavior that we have to support, even though it
+            // was incorrect starting with Clarity 2 when this argument no
+            // longer had to be a principal literal
+            argument_index <= 1
+        }
+    }
 }
 
 pub struct TopLevelExpressionIndex {
@@ -467,28 +492,39 @@ impl GraphWalker {
     fn get_sorted_dependencies(&mut self, graph: &Graph) -> Vec<usize> {
         let mut sorted_indexes = Vec::<usize>::new();
         for expr_index in 0..graph.nodes_count() {
-            self.sort_dependencies_recursion(expr_index, graph, &mut sorted_indexes);
+            if !self.seen.contains(&expr_index) {
+                self.sort_dependencies(expr_index, graph, &mut sorted_indexes);
+            }
         }
         sorted_indexes
     }
 
-    fn sort_dependencies_recursion(
-        &mut self,
-        tle_index: usize,
-        graph: &Graph,
-        branch: &mut Vec<usize>,
-    ) {
-        if self.seen.contains(&tle_index) {
-            return;
-        }
+    fn sort_dependencies(&mut self, expr_index: usize, graph: &Graph, branch: &mut Vec<usize>) {
+        let mut stack = vec![(expr_index, false)];
 
-        self.seen.insert(tle_index);
-        if let Some(list) = graph.adjacency_list.get(tle_index) {
-            for neighbor in list.iter() {
-                self.sort_dependencies_recursion(*neighbor, graph, branch);
+        while let Some((tle_index, processed)) = stack.pop() {
+            if processed {
+                branch.push(tle_index);
+                continue;
+            }
+
+            if self.seen.contains(&tle_index) {
+                continue;
+            }
+
+            self.seen.insert(tle_index);
+
+            stack.push((tle_index, true));
+
+            if let Some(list) = graph.adjacency_list.get(tle_index) {
+                // reverse iteration to keep a recursive-like result
+                for node_index in list.iter().rev() {
+                    if !self.seen.contains(node_index) {
+                        stack.push((*node_index, false));
+                    }
+                }
             }
         }
-        branch.push(tle_index);
     }
 
     fn get_cycling_dependencies(

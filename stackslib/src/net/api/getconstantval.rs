@@ -38,7 +38,7 @@ pub struct ConstantValResponse {
     pub data: String,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct RPCGetConstantValRequestHandler {
     pub constname: Option<ClarityName>,
     pub contract_identifier: Option<QualifiedContractIdentifier>,
@@ -136,7 +136,6 @@ impl RPCRequestHandler for RPCGetConstantValRequestHandler {
                             let contract = clarity_db.get_contract(&contract_identifier).ok()?;
 
                             let cst = contract
-                                .contract_context
                                 .lookup_variable(constant_name.as_str())?
                                 .serialize_to_hex()
                                 .ok()?;

@@ -1,5 +1,5 @@
 // Copyright (C) 2013-2020 Blockstack PBC, a public benefit corporation
-// Copyright (C) 2020-2022 Stacks Open Internet Foundation
+// Copyright (C) 2020-2026 Stacks Open Internet Foundation
 //
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
@@ -30,7 +30,7 @@ use crate::chainstate::burn::db::sortdb::*;
 use crate::chainstate::burn::operations::{LeaderBlockCommitOp, LeaderKeyRegisterOp};
 use crate::chainstate::burn::*;
 use crate::chainstate::nakamoto::NakamotoBlock;
-use crate::chainstate::stacks::db::test::*;
+use crate::chainstate::stacks::db::testing::*;
 use crate::chainstate::stacks::db::*;
 use crate::chainstate::stacks::miner::*;
 use crate::chainstate::stacks::*;
@@ -98,6 +98,7 @@ pub fn copy_dir(src_dir: &str, dest_dir: &str) -> Result<(), io::Error> {
 }
 
 // one point per round
+#[derive(Default)]
 pub struct TestMinerTracePoint {
     pub fork_snapshots: HashMap<usize, BlockSnapshot>, // map miner ID to snapshot
     pub stacks_blocks: HashMap<usize, StacksBlock>,    // map miner ID to stacks block
@@ -270,8 +271,15 @@ impl TestStacksNode {
             .into_iter()
             .map(|addr| (addr, 10_000_000_000))
             .collect();
-        let chainstate =
-            instantiate_chainstate_with_balances(mainnet, chain_id, test_name, initial_balances);
+        let builder = if mainnet {
+            TestChainstateBuilder::new_mainnet(test_name)
+        } else {
+            TestChainstateBuilder::new_testnet(test_name)
+        };
+        let chainstate = builder
+            .with_chain_id(chain_id)
+            .with_balances(initial_balances)
+            .build();
         TestStacksNode {
             chainstate,
             prev_keys: vec![],
@@ -1138,7 +1146,7 @@ pub fn make_user_contract_publish(
     contract_name: &str,
     contract_content: &str,
 ) -> StacksTransaction {
-    let name = ContractName::from(contract_name);
+    let name = ContractName::try_from(contract_name).expect("invalid contract name");
     let code_body = StacksString::from_string(&contract_content.to_string()).unwrap();
 
     let payload = TransactionSmartContract { name, code_body };
@@ -1154,7 +1162,7 @@ pub fn make_versioned_user_contract_publish(
     contract_content: &str,
     version: ClarityVersion,
 ) -> StacksTransaction {
-    let name = ContractName::from(contract_name);
+    let name = ContractName::try_from(contract_name).unwrap();
     let code_body = StacksString::from_string(&contract_content.to_string()).unwrap();
 
     let payload = TransactionPayload::SmartContract(

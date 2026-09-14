@@ -4311,7 +4311,10 @@ fn stack_agg_increase() {
     peer_config
         .stacker_dbs
         .push(boot_code_id(MINERS_NAME, false));
-    peer_config.chain_config.epochs = Some(StacksEpoch::unit_test_3_0_only(1000)); // Let us not activate nakamoto to make life easier
+    peer_config.chain_config.epochs = Some(StacksEpoch::unit_test_epoch_only(
+        1000,
+        StacksEpochId::Epoch30,
+    )); // Let us not activate nakamoto to make life easier
     peer_config.chain_config.initial_balances =
         vec![(addr.to_account_principal(), 1_000_000_000_000_000_000)];
     peer_config
@@ -4688,10 +4691,13 @@ fn stack_agg_increase() {
     let expected_result = Value::okay(Value::Tuple(
         TupleData::from_data(vec![
             (
-                "stacker".into(),
+                ClarityName::from_literal("stacker"),
                 Value::Principal(PrincipalData::from(bob.address.clone())),
             ),
-            ("total-locked".into(), Value::UInt(min_ustx * 2)),
+            (
+                ClarityName::from_literal("total-locked"),
+                Value::UInt(min_ustx * 2),
+            ),
         ])
         .unwrap(),
     ))
@@ -6460,10 +6466,13 @@ fn stack_increase(use_nakamoto: bool) {
     let expected_result = Value::okay(Value::Tuple(
         TupleData::from_data(vec![
             (
-                "stacker".into(),
+                ClarityName::from_literal("stacker"),
                 Value::Principal(PrincipalData::from(alice_address.clone())),
             ),
-            ("total-locked".into(), Value::UInt(min_ustx * 2)),
+            (
+                ClarityName::from_literal("total-locked"),
+                Value::UInt(min_ustx * 2),
+            ),
         ])
         .unwrap(),
     ))
@@ -6645,8 +6654,14 @@ fn delegate_stack_increase(use_nakamoto: bool) {
 
     let expected_result = Value::okay(Value::Tuple(
         TupleData::from_data(vec![
-            ("stacker".into(), Value::Principal(alice_address)),
-            ("total-locked".into(), Value::UInt(min_ustx * 2)),
+            (
+                ClarityName::from_literal("stacker"),
+                Value::Principal(alice_address),
+            ),
+            (
+                ClarityName::from_literal("total-locked"),
+                Value::UInt(min_ustx * 2),
+            ),
         ])
         .unwrap(),
     ))
@@ -6710,7 +6725,10 @@ pub fn pox_4_scenario_test_setup<'a>(
     peer_config
         .stacker_dbs
         .push(boot_code_id(MINERS_NAME, false));
-    peer_config.chain_config.epochs = Some(StacksEpoch::unit_test_3_0_only(1000));
+    peer_config.chain_config.epochs = Some(StacksEpoch::unit_test_epoch_only(
+        1000,
+        StacksEpochId::Epoch30,
+    ));
     peer_config.chain_config.initial_balances =
         vec![(addr.to_account_principal(), 1_000_000_000_000_000_000)];
     peer_config
@@ -9049,7 +9067,11 @@ pub fn get_stacking_state_pox_4(
 ) -> Option<Value> {
     with_clarity_db_ro(peer, tip, |db| {
         let lookup_tuple = Value::Tuple(
-            TupleData::from_data(vec![("stacker".into(), account.clone().into())]).unwrap(),
+            TupleData::from_data(vec![(
+                ClarityName::from_literal("stacker"),
+                account.clone().into(),
+            )])
+            .unwrap(),
         );
         let epoch = db.get_clarity_epoch_version().unwrap();
         db.fetch_entry_unknown_descriptor(
@@ -9075,21 +9097,27 @@ pub fn make_signer_key_authorization_lookup_key(
 ) -> Value {
     TupleData::from_data(vec![
         (
-            "pox-addr".into(),
+            ClarityName::from_literal("pox-addr"),
             pox_addr.as_clarity_tuple().unwrap().into(),
         ),
-        ("reward-cycle".into(), Value::UInt(reward_cycle.into())),
         (
-            "topic".into(),
+            ClarityName::from_literal("reward-cycle"),
+            Value::UInt(reward_cycle.into()),
+        ),
+        (
+            ClarityName::from_literal("topic"),
             Value::string_ascii_from_bytes(topic.get_name_str().into()).unwrap(),
         ),
-        ("period".into(), Value::UInt(period)),
+        (ClarityName::from_literal("period"), Value::UInt(period)),
         (
-            "signer-key".into(),
+            ClarityName::from_literal("signer-key"),
             Value::buff_from(signer_key.to_bytes_compressed()).unwrap(),
         ),
-        ("max-amount".into(), Value::UInt(max_amount)),
-        ("auth-id".into(), Value::UInt(auth_id)),
+        (
+            ClarityName::from_literal("max-amount"),
+            Value::UInt(max_amount),
+        ),
+        (ClarityName::from_literal("auth-id"), Value::UInt(auth_id)),
     ])
     .unwrap()
     .into()
@@ -9179,11 +9207,17 @@ pub fn get_partially_stacked_state_pox_4(
     with_clarity_db_ro(peer, tip, |db| {
         let lookup_tuple = TupleData::from_data(vec![
             (
-                "pox-addr".into(),
+                ClarityName::from_literal("pox-addr"),
                 pox_addr.as_clarity_tuple().unwrap().into(),
             ),
-            ("reward-cycle".into(), Value::UInt(reward_cycle.into())),
-            ("sender".into(), PrincipalData::from(sender.clone()).into()),
+            (
+                ClarityName::from_literal("reward-cycle"),
+                Value::UInt(reward_cycle.into()),
+            ),
+            (
+                ClarityName::from_literal("sender"),
+                PrincipalData::from(sender.clone()).into(),
+            ),
         ])
         .unwrap()
         .into();
@@ -9215,7 +9249,11 @@ pub fn get_delegation_state_pox_4(
 ) -> Option<Value> {
     with_clarity_db_ro(peer, tip, |db| {
         let lookup_tuple = Value::Tuple(
-            TupleData::from_data(vec![("stacker".into(), account.clone().into())]).unwrap(),
+            TupleData::from_data(vec![(
+                ClarityName::from_literal("stacker"),
+                account.clone().into(),
+            )])
+            .unwrap(),
         );
         let epoch = db.get_clarity_epoch_version().unwrap();
         db.fetch_entry_unknown_descriptor(
@@ -9659,7 +9697,7 @@ fn missed_slots_no_unlock() {
 
     for b in blocks.into_iter() {
         if let Some(ref reward_set_data) = b.reward_set_data {
-            let signers_set = reward_set_data.reward_set.signers.as_ref().unwrap();
+            let signers_set = reward_set_data.reward_set.signers().unwrap();
             assert_eq!(signers_set.len(), 1);
             assert_eq!(
                 StacksPublicKey::from_private(&alice).to_bytes_compressed(),
@@ -9668,13 +9706,14 @@ fn missed_slots_no_unlock() {
             let rewarded_addrs = HashSet::<_>::from_iter(
                 reward_set_data
                     .reward_set
-                    .rewarded_addresses
+                    .rewarded_addresses()
+                    .unwrap()
                     .iter()
                     .map(|a| a.to_burnchain_repr()),
             );
             assert_eq!(rewarded_addrs.len(), 1);
             assert_eq!(
-                reward_set_data.reward_set.rewarded_addresses[0].bytes(),
+                reward_set_data.reward_set.rewarded_addresses().unwrap()[0].bytes(),
                 alice_address.bytes().0.to_vec(),
             );
             reward_cycles_in_2_5 += 1;
@@ -9816,8 +9855,12 @@ fn no_lockups_2_5() {
     let blocks = observer.get_blocks();
     for b in blocks.into_iter() {
         if let Some(ref reward_set_data) = b.reward_set_data {
-            assert_eq!(reward_set_data.reward_set.signers, Some(vec![]));
-            assert!(reward_set_data.reward_set.rewarded_addresses.is_empty());
+            assert_eq!(reward_set_data.reward_set.signers().cloned(), Some(vec![]));
+            assert!(reward_set_data
+                .reward_set
+                .rewarded_addresses()
+                .unwrap()
+                .is_empty());
             eprintln!("{:?}", b.reward_set_data)
         }
     }

@@ -1,3 +1,18 @@
+// Copyright (C) 2020-2026 Stacks Open Internet Foundation
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::fmt::Write;
@@ -11,7 +26,7 @@ use clarity::vm::costs::ExecutionCost;
 use clarity::vm::types::{
     QualifiedContractIdentifier, ResponseData, StacksAddressExtensions, TupleData,
 };
-use clarity::vm::{ClarityVersion, Value};
+use clarity::vm::{ClarityName, ClarityVersion, ContractName, Value};
 use lazy_static::lazy_static;
 use pinny::tag;
 use reqwest;
@@ -503,7 +518,7 @@ fn integration_test_get_info() {
                 let client = reqwest::blocking::Client::new();
                 let path = format!("{http_origin}/v2/map_entry/{contract_addr}/get-info/block-data");
 
-                let key: Value = TupleData::from_data(vec![("height".into(), Value::UInt(3))])
+                let key: Value = TupleData::from_data(vec![(ClarityName::from_literal("height"), Value::UInt(3))])
                     .unwrap().into();
 
                 eprintln!("Test: POST {path}");
@@ -518,7 +533,7 @@ fn integration_test_get_info() {
 
                 assert_eq!(result_data, expected_data);
 
-                let key: Value = TupleData::from_data(vec![("height".into(), Value::UInt(100))])
+                let key: Value = TupleData::from_data(vec![(ClarityName::from_literal("height"), Value::UInt(100))])
                     .unwrap().into();
 
                 eprintln!("Test: POST {path}");
@@ -534,7 +549,7 @@ fn integration_test_get_info() {
                 // now, let's use a query string to get data without a proof
                 let path = format!("{http_origin}/v2/map_entry/{contract_addr}/get-info/block-data?proof=0");
 
-                let key: Value = TupleData::from_data(vec![("height".into(), Value::UInt(3))])
+                let key: Value = TupleData::from_data(vec![(ClarityName::from_literal("height"), Value::UInt(3))])
                     .unwrap().into();
 
                 eprintln!("Test: POST {path}");
@@ -554,7 +569,7 @@ fn integration_test_get_info() {
                 // now, let's use a query string to get data _with_ a proof
                 let path = format!("{http_origin}/v2/map_entry/{contract_addr}/get-info/block-data?proof=1");
 
-                let key: Value = TupleData::from_data(vec![("height".into(), Value::UInt(3))])
+                let key: Value = TupleData::from_data(vec![(ClarityName::from_literal("height"), Value::UInt(3))])
                     .unwrap().into();
 
                 eprintln!("Test: POST {path}");
@@ -969,8 +984,8 @@ fn integration_test_get_info() {
 
                 let tx_payload = TransactionPayload::from(TransactionContractCall {
                     address: contract_addr.clone(),
-                    contract_name: "get-info".into(),
-                    function_name: "update-info".into(),
+                    contract_name: ContractName::from_literal("get-info"),
+                    function_name: ClarityName::from_literal("update-info"),
                     function_args: vec![],
                 });
 
@@ -1019,8 +1034,8 @@ fn integration_test_get_info() {
 
                 let tx_payload = TransactionPayload::from(TransactionContractCall {
                     address: contract_addr,
-                    contract_name: "get-info".into(),
-                    function_name: "update-info".into(),
+                    contract_name: ContractName::from_literal("get-info"),
+                    function_name: ClarityName::from_literal("update-info"),
                     function_args: vec![],
                 });
 
@@ -1709,6 +1724,121 @@ fn mine_contract_twice() {
     );
 
     run_loop.start(num_rounds).unwrap();
+}
+
+/// End-to-end check that `disable_contract_interface = true` on an
+/// `[[events_observer]]` entry causes the `contract_interface` (ABI) field of
+/// every transaction in the `new_block` events sent to that observer to be
+/// `null`, even for a contract-publish transaction that would otherwise carry a
+/// fully populated interface. Mirrors `mine_contract_twice`, but drives a real
+/// event observer to inspect the emitted payloads.
+#[ignore]
+#[test]
+fn contract_interface_omitted_from_block_events_when_disabled() {
+    use std::thread::sleep;
+    use std::time::{Duration, Instant};
+
+    use stacks::config::{EventKeyType, EventObserverConfig};
+
+    use super::neon_integrations::test_observer;
+
+    let mut conf = new_test_conf();
+    let contract_sk = StacksPrivateKey::from_hex(SK_1).unwrap();
+
+    conf.burnchain.commit_anchor_block_within = 1000;
+    conf.add_initial_balance(to_addr(&contract_sk).to_string(), 1000);
+
+    // Capture `new_block` events with an in-process HTTP observer. The behavior
+    // under test: the ABI must be stripped from block events sent to an observer
+    // configured with `disable_contract_interface`.
+    test_observer::clear();
+    test_observer::spawn();
+    conf.events_observers.insert(EventObserverConfig {
+        endpoint: format!("localhost:{}", test_observer::EVENT_OBSERVER_PORT),
+        events_keys: vec![EventKeyType::AnyEvent],
+        timeout_ms: 1000,
+        disable_retries: false,
+        disable_contract_interface: true,
+    });
+
+    let num_rounds = 3;
+    let mut run_loop = RunLoop::new(conf);
+
+    run_loop
+        .callbacks
+        .on_new_tenure(|round, _burnchain_tip, _chain_tip, tenure| {
+            let mut chainstate_copy = tenure.open_chainstate();
+            let sortdb = tenure.open_fake_sortdb();
+            let contract_sk = StacksPrivateKey::from_hex(SK_1).unwrap();
+
+            if round == 1 {
+                let publish_tx = make_contract_publish(
+                    &contract_sk,
+                    0,
+                    10,
+                    CHAIN_ID_TESTNET,
+                    "faucet",
+                    FAUCET_CONTRACT,
+                );
+                let (consensus_hash, block_hash) = (
+                    &tenure.parent_block.metadata.consensus_hash,
+                    &tenure.parent_block.metadata.anchored_header.block_hash(),
+                );
+                tenure
+                    .mem_pool
+                    .submit_raw(
+                        &mut chainstate_copy,
+                        &sortdb,
+                        consensus_hash,
+                        block_hash,
+                        publish_tx,
+                        &ExecutionCost::max_value(),
+                        &StacksEpochId::Epoch21,
+                    )
+                    .unwrap();
+            }
+        });
+
+    run_loop.start(num_rounds).unwrap();
+
+    // The observer worker posts asynchronously, so poll until the contract-publish
+    // transaction shows up in a `new_block` event (or we time out). `run_loop` stays
+    // in scope here, keeping the dispatcher's worker thread alive to finish flushing.
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let mut saw_contract_publish = false;
+    loop {
+        for block in test_observer::get_blocks() {
+            let txs = block.get("transactions").unwrap().as_array().unwrap();
+            for tx in txs {
+                // With the option enabled, the ABI is omitted for every transaction.
+                assert!(
+                    tx.get("contract_interface").unwrap().is_null(),
+                    "contract_interface must be null when disabled, got tx: {tx}"
+                );
+
+                // Positively confirm the contract-publish tx was observed, so the
+                // null-check above is not vacuously satisfied.
+                let raw_tx = tx.get("raw_tx").unwrap().as_str().unwrap();
+                if raw_tx != "0x00" {
+                    let bytes = hex_bytes(raw_tx.trim_start_matches("0x")).unwrap();
+                    let parsed = StacksTransaction::consensus_deserialize(&mut &bytes[..]).unwrap();
+                    if matches!(parsed.payload, TransactionPayload::SmartContract(..)) {
+                        saw_contract_publish = true;
+                    }
+                }
+            }
+        }
+
+        if saw_contract_publish || Instant::now() > deadline {
+            break;
+        }
+        sleep(Duration::from_millis(500));
+    }
+
+    assert!(
+        saw_contract_publish,
+        "did not observe the contract-publish transaction in any new_block event"
+    );
 }
 
 #[test]

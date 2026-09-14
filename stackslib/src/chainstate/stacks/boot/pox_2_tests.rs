@@ -103,7 +103,11 @@ pub fn get_stacking_state_pox(
 ) -> Option<Value> {
     with_clarity_db_ro(peer, tip, |db| {
         let lookup_tuple = Value::Tuple(
-            TupleData::from_data(vec![("stacker".into(), account.clone().into())]).unwrap(),
+            TupleData::from_data(vec![(
+                ClarityName::from_literal("stacker"),
+                account.clone().into(),
+            )])
+            .unwrap(),
         );
         let epoch = db.get_clarity_epoch_version().unwrap();
         db.fetch_entry_unknown_descriptor(
@@ -175,8 +179,14 @@ pub fn check_all_stacker_link_invariants(
 pub fn generate_pox_clarity_value(str_hash: &str) -> Value {
     let byte_vec = hex_bytes(str_hash).unwrap();
     let pox_addr_tuple = TupleData::from_data(vec![
-        ("hashbytes".into(), Value::buff_from(byte_vec).unwrap()),
-        ("version".into(), Value::buff_from_byte(0)),
+        (
+            ClarityName::from_literal("hashbytes"),
+            Value::buff_from(byte_vec).unwrap(),
+        ),
+        (
+            ClarityName::from_literal("version"),
+            Value::buff_from_byte(0),
+        ),
     ])
     .unwrap();
 
@@ -370,8 +380,14 @@ pub fn check_stacking_state_invariants(
 
             let entry_key = Value::from(
                 TupleData::from_data(vec![
-                    ("reward-cycle".into(), Value::UInt(cycle_checked)),
-                    ("index".into(), Value::UInt(reward_index)),
+                    (
+                        ClarityName::from_literal("reward-cycle"),
+                        Value::UInt(cycle_checked),
+                    ),
+                    (
+                        ClarityName::from_literal("index"),
+                        Value::UInt(reward_index),
+                    ),
                 ])
                 .unwrap(),
             );
@@ -589,7 +605,7 @@ pub fn get_reward_cycle_total(peer: &mut TestPeer, tip: &StacksBlockId, cycle_nu
 
     with_clarity_db_ro(peer, tip, |db| {
         let total_stacked_key = TupleData::from_data(vec![(
-            "reward-cycle".into(),
+            ClarityName::from_literal("reward-cycle"),
             Value::UInt(cycle_number.into()),
         )])
         .unwrap()
@@ -631,9 +647,15 @@ pub fn get_partial_stacked(
 ) -> u128 {
     with_clarity_db_ro(peer, tip, |db| {
         let key = TupleData::from_data(vec![
-            ("pox-addr".into(), pox_addr.clone()),
-            ("reward-cycle".into(), Value::UInt(cycle_number.into())),
-            ("sender".into(), Value::from(sender.clone())),
+            (ClarityName::from_literal("pox-addr"), pox_addr.clone()),
+            (
+                ClarityName::from_literal("reward-cycle"),
+                Value::UInt(cycle_number.into()),
+            ),
+            (
+                ClarityName::from_literal("sender"),
+                Value::from(sender.clone()),
+            ),
         ])
         .unwrap()
         .into();
@@ -713,7 +735,7 @@ fn test_simple_pox_lockup_transition_pox_2() {
 
     eprintln!("First v2 cycle = {}", first_v2_cycle);
 
-    let epochs = StacksEpoch::all(0, 0, EMPTY_SORTITIONS as u64 + 10);
+    let epochs = StacksEpoch::unit_test_2_1_with_heights(0, 0, EMPTY_SORTITIONS as u64 + 10);
 
     let observer = TestEventObserver::new();
 
@@ -1174,7 +1196,7 @@ fn test_simple_pox_2_auto_unlock(alice_first: bool) {
 
     eprintln!("First v2 cycle = {}", first_v2_cycle);
 
-    let epochs = StacksEpoch::all(0, 0, EMPTY_SORTITIONS as u64 + 10);
+    let epochs = StacksEpoch::unit_test_2_1_with_heights(0, 0, EMPTY_SORTITIONS as u64 + 10);
 
     let observer = TestEventObserver::new();
 
@@ -1272,6 +1294,7 @@ fn test_simple_pox_2_auto_unlock(alice_first: bool) {
         burnchain.pox_constants.v1_unlock_height,
         burnchain.pox_constants.v2_unlock_height,
         burnchain.pox_constants.v3_unlock_height,
+        burnchain.pox_constants.pox_5_activation_height,
     )
     .unwrap();
     assert_eq!(bob_bal.amount_locked(), POX_THRESHOLD_STEPS_USTX);
@@ -1303,6 +1326,7 @@ fn test_simple_pox_2_auto_unlock(alice_first: bool) {
         burnchain.pox_constants.v1_unlock_height,
         burnchain.pox_constants.v2_unlock_height,
         burnchain.pox_constants.v3_unlock_height,
+        burnchain.pox_constants.pox_5_activation_height,
     )
     .unwrap();
     assert_eq!(bob_bal.amount_locked(), 0);
@@ -1318,6 +1342,7 @@ fn test_simple_pox_2_auto_unlock(alice_first: bool) {
         burnchain.pox_constants.v1_unlock_height,
         burnchain.pox_constants.v2_unlock_height,
         burnchain.pox_constants.v3_unlock_height,
+        burnchain.pox_constants.pox_5_activation_height,
     )
     .unwrap();
     assert_eq!(bob_bal.amount_locked(), 0);
@@ -1464,7 +1489,7 @@ fn delegate_stack_increase() {
 
     eprintln!("First v2 cycle = {first_v2_cycle}");
 
-    let epochs = StacksEpoch::all(0, 0, EMPTY_SORTITIONS as u64 + 10);
+    let epochs = StacksEpoch::unit_test_2_1_with_heights(0, 0, EMPTY_SORTITIONS as u64 + 10);
 
     let observer = TestEventObserver::new();
 
@@ -1820,7 +1845,7 @@ fn stack_increase() {
 
     eprintln!("First v2 cycle = {}", first_v2_cycle);
 
-    let epochs = StacksEpoch::all(0, 0, EMPTY_SORTITIONS as u64 + 10);
+    let epochs = StacksEpoch::unit_test_2_1_with_heights(0, 0, EMPTY_SORTITIONS as u64 + 10);
 
     let observer = TestEventObserver::new();
 
@@ -2065,7 +2090,7 @@ fn test_lock_period_invariant_extend_transition() {
     eprintln!("First v2 cycle = {first_v2_cycle}");
     assert_eq!(first_v2_cycle, EXPECTED_FIRST_V2_CYCLE);
 
-    let epochs = StacksEpoch::all(0, 0, EMPTY_SORTITIONS as u64 + 10);
+    let epochs = StacksEpoch::unit_test_2_1_with_heights(0, 0, EMPTY_SORTITIONS as u64 + 10);
 
     let observer = TestEventObserver::new();
 
@@ -2227,7 +2252,7 @@ fn test_pox_extend_transition_pox_2() {
     eprintln!("First v2 cycle = {}", first_v2_cycle);
     assert_eq!(first_v2_cycle, EXPECTED_FIRST_V2_CYCLE);
 
-    let epochs = StacksEpoch::all(0, 0, EMPTY_SORTITIONS as u64 + 10);
+    let epochs = StacksEpoch::unit_test_2_1_with_heights(0, 0, EMPTY_SORTITIONS as u64 + 10);
 
     let observer = TestEventObserver::new();
 
@@ -2670,7 +2695,7 @@ fn test_delegate_extend_transition_pox_2() {
     eprintln!("First v2 cycle = {}", first_v2_cycle);
     assert_eq!(first_v2_cycle, EXPECTED_FIRST_V2_CYCLE);
 
-    let epochs = StacksEpoch::all(0, 0, EMPTY_SORTITIONS as u64 + 10);
+    let epochs = StacksEpoch::unit_test_2_1_with_heights(0, 0, EMPTY_SORTITIONS as u64 + 10);
 
     let observer = TestEventObserver::new();
 
@@ -3384,7 +3409,7 @@ fn test_pox_2_getters() {
     eprintln!("First v2 cycle = {}", first_v2_cycle);
     assert_eq!(first_v2_cycle, EXPECTED_FIRST_V2_CYCLE);
 
-    let epochs = StacksEpoch::all(0, 0, EMPTY_SORTITIONS as u64 + 10);
+    let epochs = StacksEpoch::unit_test_2_1_with_heights(0, 0, EMPTY_SORTITIONS as u64 + 10);
 
     let (mut peer, mut keys) =
         instantiate_pox_peer_with_epoch(&burnchain, "test-pox-2-getters", Some(epochs), None);
@@ -3660,7 +3685,7 @@ fn test_get_pox_addrs() {
 
     assert_eq!(burnchain.pox_constants.reward_slots(), 4);
 
-    let epochs = StacksEpoch::all(1, 2, 3);
+    let epochs = StacksEpoch::unit_test_2_1_with_heights(1, 2, 3);
 
     let (mut peer, keys) =
         instantiate_pox_peer_with_epoch(&burnchain, "test-get-pox-addrs", Some(epochs), None);
@@ -3938,7 +3963,7 @@ fn test_stack_with_segwit() {
 
     assert_eq!(burnchain.pox_constants.reward_slots(), 4);
 
-    let epochs = StacksEpoch::all(1, 2, 3);
+    let epochs = StacksEpoch::unit_test_2_1_with_heights(1, 2, 3);
 
     let (mut peer, all_keys) =
         instantiate_pox_peer_with_epoch(&burnchain, "test-stack-with-segwit", Some(epochs), None);
@@ -4266,7 +4291,7 @@ fn test_pox_2_delegate_stx_addr_validation() {
     eprintln!("First v2 cycle = {}", first_v2_cycle);
     assert_eq!(first_v2_cycle, EXPECTED_FIRST_V2_CYCLE);
 
-    let epochs = StacksEpoch::all(0, 0, EMPTY_SORTITIONS as u64 + 10);
+    let epochs = StacksEpoch::unit_test_2_1_with_heights(0, 0, EMPTY_SORTITIONS as u64 + 10);
 
     let (mut peer, mut keys) = instantiate_pox_peer_with_epoch(
         &burnchain,
@@ -4450,7 +4475,7 @@ fn stack_aggregation_increase() {
 
     eprintln!("First v2 cycle = {}", first_v2_cycle);
 
-    let epochs = StacksEpoch::all(0, 0, EMPTY_SORTITIONS as u64 + 10);
+    let epochs = StacksEpoch::unit_test_2_1_with_heights(0, 0, EMPTY_SORTITIONS as u64 + 10);
 
     let observer = TestEventObserver::new();
 
@@ -4897,7 +4922,7 @@ fn stack_in_both_pox1_and_pox2() {
 
     eprintln!("First v2 cycle = {}", first_v2_cycle);
 
-    let epochs = StacksEpoch::all(0, 0, EMPTY_SORTITIONS as u64 + 10);
+    let epochs = StacksEpoch::unit_test_2_1_with_heights(0, 0, EMPTY_SORTITIONS as u64 + 10);
 
     let observer = TestEventObserver::new();
 

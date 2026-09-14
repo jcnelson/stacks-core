@@ -1,5 +1,5 @@
 // Copyright (C) 2013-2020 Blockstack PBC, a public benefit corporation
-// Copyright (C) 2020-2023 Stacks Open Internet Foundation
+// Copyright (C) 2020-2026 Stacks Open Internet Foundation
 //
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
@@ -36,7 +36,6 @@ use stacks_common::util::hash::Hash160;
 use stacks_common::util::{get_epoch_time_secs, sleep_ms};
 use stx_genesis::GenesisData;
 
-use crate::burnchains::make_bitcoin_indexer;
 use crate::globals::Globals as GenericGlobals;
 use crate::monitoring::{start_serving_monitoring_metrics, MonitoringError};
 use crate::nakamoto_node::{self, StacksNode, BLOCK_PROCESSOR_STACK_SIZE, RELAYER_MAX_BUFFER};
@@ -77,11 +76,16 @@ pub struct RunLoop {
 
 impl RunLoop {
     /// Sets up a runloop and node, given a config.
+    ///
+    /// If no event_dispatcher is passed, a new one is created. Allowing one to be passed in
+    /// allows the nakamoto runloop to continue using the same event dispatcher as the
+    /// neon runloop at the epoch 2->3 transition.
     pub fn new(
         config: Config,
         should_keep_running: Option<Arc<AtomicBool>>,
         counters: Option<Counters>,
         monitoring_thread: Option<JoinHandle<Result<(), MonitoringError>>>,
+        event_dispatcher: Option<EventDispatcher>,
     ) -> Self {
         let channels = CoordinatorCommunication::instantiate();
         let should_keep_running =
@@ -91,11 +95,8 @@ impl RunLoop {
             config.burnchain.burn_fee_cap,
         )));
 
-        let mut event_dispatcher = EventDispatcher::new(config.get_working_dir());
-        for observer in config.events_observers.iter() {
-            event_dispatcher.register_observer(observer);
-        }
-        event_dispatcher.process_pending_payloads();
+        let event_dispatcher =
+            event_dispatcher.unwrap_or_else(|| EventDispatcher::from_config(&config));
 
         Self {
             config,
@@ -173,9 +174,10 @@ impl RunLoop {
             }
             let keychain = Keychain::default(self.config.node.seed.clone());
             let mut op_signer = keychain.generate_op_signer();
-            if let Err(e) = burnchain.create_wallet_if_dne() {
-                warn!("Error when creating wallet: {e:?}");
-            }
+
+            // a miner cannot operate without a wallet; retry: bitcoind may
+            // still be starting up
+            burnchain.ensure_miner_wallet_loaded();
             let mut btc_addrs = vec![(
                 StacksEpochId::Epoch2_05,
                 // legacy
@@ -303,8 +305,6 @@ impl RunLoop {
             true,
         )
         .expect("Failed to connect Atlas DB during startup");
-        let coordinator_indexer =
-            make_bitcoin_indexer(&self.config, Some(self.should_keep_running.clone()));
 
         let rpc_port = moved_config
             .node
@@ -335,7 +335,6 @@ impl RunLoop {
                     cost_estimator.as_deref_mut(),
                     fee_estimator.as_deref_mut(),
                     miner_status,
-                    coordinator_indexer,
                     atlas_db,
                 );
             })
@@ -412,6 +411,9 @@ impl RunLoop {
             .coordinator_channels
             .take()
             .expect("Run loop already started, can only start once after initialization.");
+
+        // Apply config-driven process-wide state before any chainstate is opened.
+        self.config.apply_runtime_state();
 
         // setup the termination handler, allow it to error if a prior runloop already set it
         neon::RunLoop::setup_termination_handler(self.should_keep_running.clone(), true);

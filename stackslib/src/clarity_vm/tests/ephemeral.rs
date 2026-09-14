@@ -1,4 +1,4 @@
-// Copyright (C) 2025 Stacks Open Internet Foundation
+// Copyright (C) 2025-2026 Stacks Open Internet Foundation
 //
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
@@ -17,6 +17,7 @@ use std::fs;
 
 use clarity::vm::types::StacksAddressExtensions;
 use clarity::vm::{ClarityName, ContractName};
+use pinny::tag;
 use proptest::prelude::*;
 use rand::seq::SliceRandom;
 use rand::thread_rng;
@@ -34,7 +35,9 @@ use crate::chainstate::stacks::db::StacksChainState;
 use crate::chainstate::stacks::index::marf::MARFOpenOpts;
 use crate::chainstate::stacks::index::storage::TrieHashCalculationMode;
 use crate::chainstate::stacks::index::ClarityMarfTrieId;
-use crate::chainstate::stacks::miner::{BlockBuilder, BlockLimitFunction, TransactionResult};
+use crate::chainstate::stacks::miner::{
+    BlockBuilder, BlockLimitFunction, TransactionResourceBudgets, TransactionResult,
+};
 use crate::chainstate::stacks::{
     StacksTransaction, StacksTransactionSigner, TransactionAnchorMode, TransactionAuth,
     TransactionContractCall, TransactionPayload, TransactionPostConditionMode,
@@ -53,9 +56,9 @@ use crate::util_lib::strings::StacksString;
 /// MARF.
 /// * Verify that keys inserted into the ephemeral MARF land in the RAM-backed MARF
 /// * Verify that the ephemeral MARF store can read all keys inserted into the RAM-backed MARF, as
-/// well as all keys in the disk-backed MARF.
+///   well as all keys in the disk-backed MARF.
 /// * Verify that discarding the ephemeral MARF store leaves the disk-backed MARF unaltered (no new
-/// keys)
+///   keys)
 #[test]
 fn test_ephemeral_marf_store() {
     let path = format!("/tmp/{}.marf", function_name!());
@@ -66,11 +69,7 @@ fn test_ephemeral_marf_store() {
     let mut marfed_kv = MarfedKV::open(
         &path,
         None,
-        Some(MARFOpenOpts::new(
-            TrieHashCalculationMode::Deferred,
-            "noop",
-            false,
-        )),
+        Some(MARFOpenOpts::new(TrieHashCalculationMode::Deferred, false)),
     )
     .unwrap();
 
@@ -368,7 +367,7 @@ fn replay_block(
             tx,
             tx_len,
             &BlockLimitFunction::NO_LIMIT_HIT,
-            None,
+            &TransactionResourceBudgets::unlimited(),
             &mut total_receipts,
         );
         let err = match &tx_result {
@@ -766,6 +765,7 @@ fn test_ephemeral_nakamoto_block_replay_smart_contract() {
     }
 }
 
+#[tag(t_prop)]
 #[test]
 fn prop_ephemeral_tip_height_matches_current() {
     proptest!(|(n in 1usize..=12)| {
@@ -777,11 +777,7 @@ fn prop_ephemeral_tip_height_matches_current() {
         let mut marfed_kv = MarfedKV::open(
             &path,
             None,
-            Some(MARFOpenOpts::new(
-                TrieHashCalculationMode::Deferred,
-                "noop",
-                false,
-            )),
+            Some(MARFOpenOpts::new(TrieHashCalculationMode::Deferred, false)),
         )
         .unwrap();
 

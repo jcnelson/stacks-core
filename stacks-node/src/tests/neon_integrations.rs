@@ -1,3 +1,19 @@
+// Copyright (C) 2013-2020 Blockstack PBC, a public benefit corporation
+// Copyright (C) 2020-2026 Stacks Open Internet Foundation
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -89,6 +105,7 @@ use crate::burnchains::bitcoin::core_controller::BitcoinCoreController;
 use crate::burnchains::bitcoin_regtest_controller::{self, UTXO};
 use crate::neon_node::RelayerThread;
 use crate::operations::BurnchainOpSigner;
+use crate::run_loop::neon::Counters;
 use crate::stacks_common::types::PrivateKey;
 use crate::syncctl::PoxSyncWatchdogComms;
 use crate::tests::gen_random_port;
@@ -287,8 +304,8 @@ pub mod test_observer {
     use stacks::net::api::postblock_proposal::BlockValidateResponse;
     use stacks::util::hash::hex_bytes;
     use stacks_common::types::chainstate::StacksBlockId;
-    use warp::Filter;
-    use {tokio, warp};
+    use tokio;
+    use warp::{self, Filter};
 
     use crate::event_dispatcher::{MinedBlockEvent, MinedMicroblockEvent, MinedNakamotoBlockEvent};
     use crate::Config;
@@ -744,6 +761,7 @@ pub mod test_observer {
             events_keys: event_keys.to_vec(),
             timeout_ms: 1000,
             disable_retries: false,
+            disable_contract_interface: false,
         });
     }
 
@@ -788,6 +806,60 @@ pub fn next_block_and_wait_with_timeout(
         blocks_processed.load(Ordering::SeqCst)
     );
     true
+}
+
+/// Wait up to `timeout_secs` for the miner to submit a block-commit built on
+/// the node's current burn tip. Use this before mining the next burn block so
+/// that the commit lands in it. A commit that misses its target burn block is
+/// rejected as a missed commit, producing an empty sortition.
+pub fn wait_for_tip_commit(
+    conf: &Config,
+    counters: &Counters,
+    timeout_secs: u64,
+) -> Result<(), String> {
+    let burn_height = get_chain_info(conf).burn_block_height;
+    wait_for(timeout_secs, || {
+        Ok(counters.neon_submitted_commit_last_burn_height.get() >= burn_height)
+    })
+}
+
+/// Like `next_block_and_wait`, but first waits for the miner to submit a
+/// block-commit built on the current burn tip, so the new burn block holds a
+/// winning commit instead of an empty sortition. Use this in tests that
+/// expect every burn block to elect a Stacks block.
+pub fn next_block_and_wait_for_commit(
+    btc_controller: &BitcoinRegtestController,
+    blocks_processed: &Arc<AtomicU64>,
+    conf: &Config,
+    counters: &Counters,
+) -> bool {
+    wait_for_tip_commit(conf, counters, PANIC_TIMEOUT_SECS)
+        .expect("Timed out waiting for the miner to submit a block-commit");
+    next_block_and_wait(btc_controller, blocks_processed)
+}
+
+/// Mine blocks until `check` returns `true`, up to `max_blocks` blocks.
+/// Each block is mined with `next_block_and_wait`, waiting up to
+/// `block_timeout_secs` for it to be processed before moving on.
+pub fn mine_blocks_until<F>(
+    btc_controller: &BitcoinRegtestController,
+    blocks_processed: &Arc<AtomicU64>,
+    max_blocks: u64,
+    block_timeout_secs: u64,
+    mut check: F,
+) -> Result<(), String>
+where
+    F: FnMut() -> Result<bool, String>,
+{
+    for _ in 0..max_blocks {
+        next_block_and_wait_with_timeout(btc_controller, blocks_processed, block_timeout_secs);
+        if check()? {
+            return Ok(());
+        }
+    }
+    Err(format!(
+        "Condition not met after mining {max_blocks} blocks"
+    ))
 }
 
 /// Returns `false` on a timeout, true otherwise.
@@ -1488,6 +1560,7 @@ pub fn get_balance<F: std::fmt::Display>(http_origin: &str, account: &F) -> u128
 pub struct Account {
     pub balance: u128,
     pub locked: u128,
+    pub unlock_height: u64,
     pub nonce: u64,
 }
 
@@ -1502,6 +1575,7 @@ pub fn get_account_result<F: std::fmt::Display>(
     Ok(Account {
         balance: u128::from_str_radix(&res.balance[2..], 16).unwrap(),
         locked: u128::from_str_radix(&res.locked[2..], 16).unwrap(),
+        unlock_height: res.unlock_height,
         nonce: res.nonce,
     })
 }
@@ -2263,6 +2337,7 @@ fn stx_delegate_btc_integration_test() {
         u32::MAX,
         u32::MAX,
         u32::MAX,
+        u32::MAX,
     );
     burnchain_config.pox_constants = pox_constants;
 
@@ -2409,16 +2484,16 @@ fn stx_delegate_btc_integration_test() {
 
                 // Ensure that the function name is as expected
                 // This verifies that there were print events for delegate-stack-stx and delegate-stx
-                let name_field =
-                    &contract_event["value"]["Response"]["data"]["Tuple"]["data_map"]["name"];
-                let name_data = name_field["Sequence"]["String"]["ASCII"]["data"]
-                    .as_array()
+                let raw_hex = contract_event["raw_value"].as_str().unwrap();
+                let clarity_bytes = hex_bytes(&raw_hex[2..]).unwrap();
+                let clarity_value =
+                    Value::deserialize_read(&mut &clarity_bytes[..], None, false).unwrap();
+                let pair = clarity_value
+                    .expect_result_ok()
+                    .unwrap()
+                    .expect_tuple()
                     .unwrap();
-                let ascii_vec = name_data
-                    .iter()
-                    .map(|num| num.as_u64().unwrap() as u8)
-                    .collect();
-                let name = String::from_utf8(ascii_vec).unwrap();
+                let name = pair.get_owned("name").unwrap().expect_ascii().unwrap();
                 if name == "delegate-stack-stx" {
                     delegate_stack_stx_found = true;
                 } else if name == "delegate-stx" {
@@ -2540,6 +2615,7 @@ fn stack_stx_burn_op_test() {
         15,
         (16 * reward_cycle_len - 1).into(),
         (17 * reward_cycle_len).into(),
+        u32::MAX,
         u32::MAX,
         u32::MAX,
         u32::MAX,
@@ -2937,6 +3013,7 @@ fn vote_for_aggregate_key_burn_op_test() {
         15,
         (16 * reward_cycle_len - 1).into(),
         (17 * reward_cycle_len).into(),
+        u32::MAX,
         u32::MAX,
         u32::MAX,
         u32::MAX,
@@ -4139,356 +4216,6 @@ fn block_replay_integration_test() {
 
 #[test]
 #[ignore]
-fn cost_voting_integration() {
-    if env::var("BITCOIND_TEST") != Ok("1".into()) {
-        return;
-    }
-
-    // let's make `<` free...
-    let cost_definer_src = "
-    (define-read-only (cost-definition-le (size uint))
-       {
-         runtime: u0, write_length: u0, write_count: u0, read_count: u0, read_length: u0
-       })
-    ";
-
-    // the contract that we'll test the costs of
-    let caller_src = "
-    (define-public (execute-2 (a uint))
-       (ok (< a a)))
-    ";
-
-    let power_vote_src = "
-    (define-public (propose-vote-confirm)
-      (let
-        ((proposal-id (unwrap-panic (contract-call? 'ST000000000000000000002AMW42H.cost-voting submit-proposal
-                            'ST000000000000000000002AMW42H.costs \"cost_le\"
-                            .cost-definer \"cost-definition-le\")))
-         (vote-amount (* u9000000000 u1000000)))
-        (try! (contract-call? 'ST000000000000000000002AMW42H.cost-voting vote-proposal proposal-id vote-amount))
-        (try! (contract-call? 'ST000000000000000000002AMW42H.cost-voting confirm-votes proposal-id))
-        (ok proposal-id)))
-    ";
-
-    let spender_sk = StacksPrivateKey::random();
-    let spender_addr = to_addr(&spender_sk);
-    let spender_princ: PrincipalData = spender_addr.clone().into();
-
-    let (mut conf, miner_account) = neon_integration_test_conf();
-
-    conf.miner.microblock_attempt_time_ms = 1_000;
-    conf.node.wait_time_for_microblocks = 0;
-    conf.node.microblock_frequency = 1_000;
-    conf.miner.first_attempt_time_ms = 2_000;
-    conf.miner.subsequent_attempt_time_ms = 5_000;
-    conf.burnchain.max_rbf = 10_000_000;
-    conf.node.wait_time_for_blocks = 1_000;
-
-    test_observer::spawn();
-    test_observer::register_any(&mut conf);
-
-    let spender_bal = 10_000_000_000 * u64::from(core::MICROSTACKS_PER_STACKS);
-
-    conf.initial_balances.push(InitialBalance {
-        address: spender_princ.clone(),
-        amount: spender_bal,
-    });
-
-    let mut btcd_controller = BitcoinCoreController::from_stx_config(&conf);
-    btcd_controller
-        .start_bitcoind()
-        .expect("Failed starting bitcoind");
-
-    let burnchain_config = Burnchain::regtest(&conf.get_burn_db_path());
-
-    let mut btc_regtest_controller = BitcoinRegtestController::with_burnchain(
-        conf.clone(),
-        None,
-        Some(burnchain_config.clone()),
-        None,
-    );
-    let http_origin = format!("http://{}", &conf.node.rpc_bind);
-
-    btc_regtest_controller.bootstrap_chain(201);
-
-    eprintln!("Chain bootstrapped...");
-
-    let mut run_loop = neon::RunLoop::new(conf.clone());
-    let blocks_processed = run_loop.get_blocks_processed_arc();
-    let channel = run_loop.get_coordinator_channel().unwrap();
-
-    thread::spawn(move || run_loop.start(Some(burnchain_config), 0));
-
-    // give the run loop some time to start up!
-    wait_for_runloop(&blocks_processed);
-
-    // first block wakes up the run loop
-    next_block_and_wait(&mut btc_regtest_controller, &blocks_processed);
-
-    // first block will hold our VRF registration
-    next_block_and_wait(&mut btc_regtest_controller, &blocks_processed);
-
-    // second block will be the first mined Stacks block
-    next_block_and_wait(&mut btc_regtest_controller, &blocks_processed);
-
-    // let's query the miner's account nonce:
-    let res = get_account(&http_origin, &miner_account);
-    assert_eq!(res.balance, 0);
-    assert_eq!(res.nonce, 1);
-
-    // and our spender:
-    let res = get_account(&http_origin, &spender_princ);
-    assert_eq!(res.balance, spender_bal as u128);
-    assert_eq!(res.nonce, 0);
-
-    let transactions = vec![
-        make_contract_publish(
-            &spender_sk,
-            0,
-            1000,
-            conf.burnchain.chain_id,
-            "cost-definer",
-            cost_definer_src,
-        ),
-        make_contract_publish(
-            &spender_sk,
-            1,
-            1000,
-            conf.burnchain.chain_id,
-            "caller",
-            caller_src,
-        ),
-        make_contract_publish(
-            &spender_sk,
-            2,
-            1000,
-            conf.burnchain.chain_id,
-            "voter",
-            power_vote_src,
-        ),
-    ];
-
-    for tx in transactions.into_iter() {
-        submit_tx(&http_origin, &tx);
-    }
-
-    next_block_and_wait(&mut btc_regtest_controller, &blocks_processed);
-    next_block_and_wait(&mut btc_regtest_controller, &blocks_processed);
-
-    let vote_tx = make_contract_call(
-        &spender_sk,
-        3,
-        1000,
-        conf.burnchain.chain_id,
-        &spender_addr,
-        "voter",
-        "propose-vote-confirm",
-        &[],
-    );
-
-    let call_le_tx = make_contract_call(
-        &spender_sk,
-        4,
-        1000,
-        conf.burnchain.chain_id,
-        &spender_addr,
-        "caller",
-        "execute-2",
-        &[Value::UInt(1)],
-    );
-
-    test_observer::clear();
-    submit_tx(&http_origin, &vote_tx);
-    submit_tx(&http_origin, &call_le_tx);
-
-    // Mine blocks until both txs are confirmed (nonces 3 and 4)
-    wait_for(120, || {
-        next_block_and_wait(&mut btc_regtest_controller, &blocks_processed);
-        let res = get_account(&http_origin, &spender_princ);
-        Ok(res.nonce >= 5)
-    })
-    .expect("vote and execute txs should have been mined");
-
-    let blocks = test_observer::get_blocks();
-    let mut tested = false;
-    let mut exec_cost = ExecutionCost::ZERO;
-    for block in blocks.iter() {
-        let transactions = block.get("transactions").unwrap().as_array().unwrap();
-        for tx in transactions.iter() {
-            let raw_tx = tx.get("raw_tx").unwrap().as_str().unwrap();
-            if raw_tx == "0x00" {
-                continue;
-            }
-            let tx_bytes = hex_bytes(&raw_tx[2..]).unwrap();
-            let parsed = StacksTransaction::consensus_deserialize(&mut &tx_bytes[..]).unwrap();
-            if let TransactionPayload::ContractCall(contract_call) = parsed.payload {
-                eprintln!("{}", contract_call.function_name.as_str());
-                if contract_call.function_name.as_str() == "execute-2" {
-                    exec_cost =
-                        serde_json::from_value(tx.get("execution_cost").cloned().unwrap()).unwrap();
-                } else if contract_call.function_name.as_str() == "propose-vote-confirm" {
-                    let raw_result = tx.get("raw_result").unwrap().as_str().unwrap();
-                    let parsed = Value::try_deserialize_hex_untyped(&raw_result[2..]).unwrap();
-                    assert_eq!(parsed.to_string(), "(ok u0)");
-                    tested = true;
-                }
-            }
-        }
-    }
-    assert!(tested, "Should have found a contract call tx");
-
-    // try to confirm the passed vote (this will fail)
-    let confirm_proposal = make_contract_call(
-        &spender_sk,
-        5,
-        1000,
-        conf.burnchain.chain_id,
-        &StacksAddress::from_string("ST000000000000000000002AMW42H").unwrap(),
-        "cost-voting",
-        "confirm-miners",
-        &[Value::UInt(0)],
-    );
-
-    test_observer::clear();
-    submit_tx(&http_origin, &confirm_proposal);
-
-    // Mine blocks until early confirm-miners is confirmed (nonce 5)
-    wait_for(120, || {
-        next_block_and_wait(&mut btc_regtest_controller, &blocks_processed);
-        let res = get_account(&http_origin, &spender_princ);
-        Ok(res.nonce >= 6)
-    })
-    .expect("early confirm-miners tx should have been mined");
-
-    let blocks = test_observer::get_blocks();
-    let mut tested = false;
-    for block in blocks.iter() {
-        let transactions = block.get("transactions").unwrap().as_array().unwrap();
-        for tx in transactions.iter() {
-            let raw_tx = tx.get("raw_tx").unwrap().as_str().unwrap();
-            if raw_tx == "0x00" {
-                continue;
-            }
-            let tx_bytes = hex_bytes(&raw_tx[2..]).unwrap();
-            let parsed = StacksTransaction::consensus_deserialize(&mut &tx_bytes[..]).unwrap();
-            if let TransactionPayload::ContractCall(contract_call) = parsed.payload {
-                eprintln!("{}", contract_call.function_name.as_str());
-                if contract_call.function_name.as_str() == "confirm-miners" {
-                    let raw_result = tx.get("raw_result").unwrap().as_str().unwrap();
-                    let parsed = Value::try_deserialize_hex_untyped(&raw_result[2..]).unwrap();
-                    assert_eq!(parsed.to_string(), "(err 13)");
-                    tested = true;
-                }
-            }
-        }
-    }
-    assert!(tested, "Should have found a contract call tx");
-
-    for _i in 0..58 {
-        next_block_and_wait(&mut btc_regtest_controller, &blocks_processed);
-    }
-
-    // confirm the passed vote
-    let confirm_proposal = make_contract_call(
-        &spender_sk,
-        6,
-        1000,
-        conf.burnchain.chain_id,
-        &StacksAddress::from_string("ST000000000000000000002AMW42H").unwrap(),
-        "cost-voting",
-        "confirm-miners",
-        &[Value::UInt(0)],
-    );
-
-    test_observer::clear();
-    submit_tx(&http_origin, &confirm_proposal);
-
-    // Mine blocks until confirm-miners after maturation is confirmed (nonce 6)
-    wait_for(120, || {
-        next_block_and_wait(&mut btc_regtest_controller, &blocks_processed);
-        let res = get_account(&http_origin, &spender_princ);
-        Ok(res.nonce >= 7)
-    })
-    .expect("confirm-miners tx should have been mined");
-
-    let blocks = test_observer::get_blocks();
-    let mut tested = false;
-    for block in blocks.iter() {
-        let transactions = block.get("transactions").unwrap().as_array().unwrap();
-        for tx in transactions.iter() {
-            let raw_tx = tx.get("raw_tx").unwrap().as_str().unwrap();
-            if raw_tx == "0x00" {
-                continue;
-            }
-            let tx_bytes = hex_bytes(&raw_tx[2..]).unwrap();
-            let parsed = StacksTransaction::consensus_deserialize(&mut &tx_bytes[..]).unwrap();
-            if let TransactionPayload::ContractCall(contract_call) = parsed.payload {
-                eprintln!("{}", contract_call.function_name.as_str());
-                if contract_call.function_name.as_str() == "confirm-miners" {
-                    let raw_result = tx.get("raw_result").unwrap().as_str().unwrap();
-                    let parsed = Value::try_deserialize_hex_untyped(&raw_result[2..]).unwrap();
-                    assert_eq!(parsed.to_string(), "(ok true)");
-                    tested = true;
-                }
-            }
-        }
-    }
-    assert!(tested, "Should have found a contract call tx");
-
-    let call_le_tx = make_contract_call(
-        &spender_sk,
-        7,
-        1000,
-        conf.burnchain.chain_id,
-        &spender_addr,
-        "caller",
-        "execute-2",
-        &[Value::UInt(1)],
-    );
-
-    test_observer::clear();
-    submit_tx(&http_origin, &call_le_tx);
-
-    // Mine blocks until execute-2 with new cost is confirmed (nonce 7)
-    wait_for(120, || {
-        next_block_and_wait(&mut btc_regtest_controller, &blocks_processed);
-        let res = get_account(&http_origin, &spender_princ);
-        Ok(res.nonce >= 8)
-    })
-    .expect("execute-2 tx should have been mined");
-
-    let blocks = test_observer::get_blocks();
-    let mut tested = false;
-    let mut new_exec_cost = ExecutionCost::max_value();
-    for block in blocks.iter() {
-        let transactions = block.get("transactions").unwrap().as_array().unwrap();
-        for tx in transactions.iter() {
-            let raw_tx = tx.get("raw_tx").unwrap().as_str().unwrap();
-            if raw_tx == "0x00" {
-                continue;
-            }
-            let tx_bytes = hex_bytes(&raw_tx[2..]).unwrap();
-            let parsed = StacksTransaction::consensus_deserialize(&mut &tx_bytes[..]).unwrap();
-            if let TransactionPayload::ContractCall(contract_call) = parsed.payload {
-                eprintln!("{}", contract_call.function_name.as_str());
-                if contract_call.function_name.as_str() == "execute-2" {
-                    new_exec_cost =
-                        serde_json::from_value(tx.get("execution_cost").cloned().unwrap()).unwrap();
-                    tested = true;
-                }
-            }
-        }
-    }
-    assert!(tested, "Should have found a contract call tx");
-
-    assert!(exec_cost.exceeds(&new_exec_cost));
-
-    test_observer::clear();
-    channel.stop_chains_coordinator();
-}
-
-#[test]
-#[ignore]
 fn mining_events_integration_test() {
     if env::var("BITCOIND_TEST") != Ok("1".into()) {
         return;
@@ -5268,6 +4995,7 @@ fn pox_integration_test() {
         u32::MAX,
         u32::MAX,
         u32::MAX,
+        u32::MAX,
     );
     burnchain_config.pox_constants = pox_constants.clone();
 
@@ -5751,6 +5479,7 @@ fn atlas_integration_test() {
             events_keys: vec![EventKeyType::AnyEvent],
             timeout_ms: 1000,
             disable_retries: false,
+            disable_contract_interface: false,
         });
 
     // Our 2 nodes will share the bitcoind node
@@ -6282,6 +6011,7 @@ fn antientropy_integration_test() {
             events_keys: vec![EventKeyType::AnyEvent],
             timeout_ms: 1000,
             disable_retries: false,
+            disable_contract_interface: false,
         });
 
     conf_follower_node.node.mine_microblocks = true;
@@ -7280,7 +7010,12 @@ fn fuzzed_median_fee_rate_estimation_test(window_size: u64, expected_final_value
             max_contract_src,
         ),
     );
-    run_until_burnchain_height(&mut btc_regtest_controller, &blocks_processed, 212, &conf);
+    // Mine blocks until the contract publish (nonce 0) is confirmed.
+    mine_blocks_until(&btc_regtest_controller, &blocks_processed, 3, 60, || {
+        let account = get_account(&http_origin, &spender_addr);
+        Ok(account.nonce >= 1)
+    })
+    .expect("Timed out waiting for contract publish to confirm");
 
     // Loop 20 times. Each time, execute the same transaction, but increase the amount *paid*.
     // This will exercise the window size.
@@ -7300,12 +7035,12 @@ fn fuzzed_median_fee_rate_estimation_test(window_size: u64, expected_final_value
                 &[],
             ),
         );
-        run_until_burnchain_height(
-            &mut btc_regtest_controller,
-            &blocks_processed,
-            212 + 2 * i,
-            &conf,
-        );
+        // Mine blocks until this transaction (nonce i) is confirmed.
+        mine_blocks_until(&btc_regtest_controller, &blocks_processed, 3, 60, || {
+            let account = get_account(&http_origin, &spender_addr);
+            Ok(account.nonce > i)
+        })
+        .unwrap_or_else(|_| panic!("Timed out waiting for tx nonce {i} to confirm"));
 
         {
             // Read from the fee estimation endpoin.
@@ -7313,8 +7048,8 @@ fn fuzzed_median_fee_rate_estimation_test(window_size: u64, expected_final_value
 
             let tx_payload = TransactionPayload::ContractCall(TransactionContractCall {
                 address: spender_addr.clone(),
-                contract_name: ContractName::from("increment-contract"),
-                function_name: ClarityName::from("increment-many"),
+                contract_name: ContractName::from_literal("increment-contract"),
+                function_name: ClarityName::from_literal("increment-many"),
                 function_args: vec![],
             });
 
@@ -7337,19 +7072,13 @@ fn fuzzed_median_fee_rate_estimation_test(window_size: u64, expected_final_value
         }
     }
 
-    // Wait two extra blocks to be sure.
-    next_block_and_wait(&mut btc_regtest_controller, &blocks_processed);
-    next_block_and_wait(&mut btc_regtest_controller, &blocks_processed);
-
     assert_eq!(response_estimated_costs.len(), response_top_fee_rates.len());
 
     // Check that:
     // 1) The cost is always the same.
-    // 2) Fee rate trends upward overall. With 2 blocks mined per transaction the
-    //    estimator window contains a mix of transaction-bearing and empty blocks.
-    //    Empty blocks contribute fee_rate=1.0 (the minimum), which can cause
-    //    intermediate dips in the median — so we verify the overall trend rather
-    //    than strict monotonicity at every step.
+    // 2) Fee rate trends upward overall. The estimator window may contain empty
+    //    blocks (fee_rate=1.0 minimum) which can cause intermediate dips in the
+    //    median — so we verify the overall trend rather than strict monotonicity.
     for i in 1..response_estimated_costs.len() {
         let curr_cost = response_estimated_costs[i];
         let last_cost = response_estimated_costs[i - 1];
@@ -8122,6 +7851,7 @@ fn test_problematic_blocks_are_not_mined() {
 
     let mut run_loop = neon::RunLoop::new(conf.clone());
     let blocks_processed = run_loop.get_blocks_processed_arc();
+    let counters = run_loop.get_counters();
     let channel = run_loop.get_coordinator_channel().unwrap();
 
     thread::spawn(move || run_loop.start(None, 0));
@@ -8149,7 +7879,12 @@ fn test_problematic_blocks_are_not_mined() {
     let mut all_new_files = vec![];
 
     for _i in 0..5 {
-        next_block_and_wait(&mut btc_regtest_controller, &blocks_processed);
+        next_block_and_wait_for_commit(
+            &btc_regtest_controller,
+            &blocks_processed,
+            &conf,
+            &counters,
+        );
         let cur_files_old = cur_files.clone();
         let (mut new_files, cur_files_new) = find_new_files(bad_blocks_dir, &cur_files_old);
         all_new_files.append(&mut new_files);
@@ -8200,7 +7935,12 @@ fn test_problematic_blocks_are_not_mined() {
     debug!("Submit problematic tx_high transaction {tx_high_txid}");
     std::env::set_var("STACKS_DISABLE_TX_PROBLEMATIC_CHECK", "1");
     submit_tx(&http_origin, &tx_high);
-    assert!(get_unconfirmed_tx(&http_origin, &tx_high_txid).is_some());
+    // `get_unconfirmed_tx` returns `None` on *any* non-success response, which
+    // includes transient RPC errors while the node is busy processing a block.
+    wait_for(30, || {
+        Ok(get_unconfirmed_tx(&http_origin, &tx_high_txid).is_some())
+    })
+    .expect("Problematic tx_high should be accepted into the mempool");
     std::env::set_var("STACKS_DISABLE_TX_PROBLEMATIC_CHECK", "0");
 
     btc_regtest_controller.build_next_block(1);
@@ -8221,7 +7961,12 @@ fn test_problematic_blocks_are_not_mined() {
 
     // mine some blocks, and log problematic blocks
     for _i in 0..6 {
-        next_block_and_wait(&mut btc_regtest_controller, &blocks_processed);
+        next_block_and_wait_for_commit(
+            &btc_regtest_controller,
+            &blocks_processed,
+            &conf,
+            &counters,
+        );
         let cur_files_old = cur_files.clone();
         let (mut new_files, cur_files_new) = find_new_files(bad_blocks_dir, &cur_files_old);
         all_new_files.append(&mut new_files);
@@ -8377,7 +8122,7 @@ fn run_with_custom_wallet() {
     test_observer::register_any(&mut conf);
 
     // custom wallet
-    conf.burnchain.wallet_name = "test_with_custom_wallet".to_string();
+    conf.burnchain.wallet_name = Some("test_with_custom_wallet".to_string());
 
     test_observer::spawn();
 
@@ -8502,7 +8247,7 @@ pub fn make_expensive_tx_chain(
                 nonce,
                 1049230 + nonce + fee_plus,
                 chain_id,
-                &contract_name,
+                contract_name.as_str(),
                 &make_runtime_sized_contract(num_index_of, nonce, &addr_prefix),
             )
         } else {
@@ -8647,6 +8392,7 @@ fn test_competing_miners_build_on_same_chain(
             15,
             (16 * reward_cycle_len - 1).into(),
             (17 * reward_cycle_len).into(),
+            u32::MAX,
             u32::MAX,
             u32::MAX,
             u32::MAX,
@@ -9596,18 +9342,31 @@ fn mock_miner_replay() {
     let follower_blocks_processed_end = follower_channel.get_stacks_blocks_processed();
 
     let blocks_dir = follower_conf.node.mock_mining_output_dir.clone().unwrap();
-    let file_count = follower_conf
-        .node
-        .mock_mining_output_dir
-        .unwrap()
-        .read_dir()
-        .unwrap_or_else(|e| panic!("Failed to read directory: {e}"))
-        .count();
+    let mock_mining_output_dir = follower_conf.node.mock_mining_output_dir.unwrap();
 
     // Check that expected output files exist
     assert!(test_dir.is_dir());
     assert!(blocks_dir.is_dir());
-    assert_eq!(file_count, 12);
+
+    // Wait for all mock mining output files to be flushed to disk.
+    let expected_file_count = 12;
+    let start = std::time::Instant::now();
+    let file_count = loop {
+        let count = mock_mining_output_dir
+            .read_dir()
+            .unwrap_or_else(|e| panic!("Failed to read directory: {e}"))
+            .count();
+        if count >= expected_file_count {
+            break count;
+        }
+        if start.elapsed() > Duration::from_secs(30) {
+            panic!(
+                "Timed out waiting for mock mining output files: expected {expected_file_count}, got {count}"
+            );
+        }
+        thread::sleep(Duration::from_millis(500));
+    };
+    assert_eq!(file_count, expected_file_count);
     assert_eq!(miner_blocks_processed_end, follower_blocks_processed_end);
 
     // PART 2

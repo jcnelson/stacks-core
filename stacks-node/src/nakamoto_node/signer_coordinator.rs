@@ -1,4 +1,4 @@
-// Copyright (C) 2024 Stacks Open Internet Foundation
+// Copyright (C) 2024-2026 Stacks Open Internet Foundation
 //
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
@@ -13,7 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::ops::Bound::Included;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
@@ -34,6 +34,7 @@ use stacks::codec::StacksMessageCodec;
 use stacks::libstackerdb::StackerDBChunkData;
 use stacks::net::stackerdb::StackerDBs;
 use stacks::types::chainstate::{StacksBlockId, StacksPrivateKey, StacksPublicKey};
+use stacks::types::MinerDiagnosticData;
 use stacks::util::hash::Sha512Trunc256Sum;
 use stacks::util::secp256k1::MessageSignature;
 use stacks::util_lib::boot::boot_code_id;
@@ -42,7 +43,9 @@ use super::miner_db::MinerDB;
 use super::stackerdb_listener::StackerDBListenerComms;
 use super::Error as NakamotoNodeError;
 use crate::event_dispatcher::StackerDBChannel;
-use crate::nakamoto_node::stackerdb_listener::{StackerDBListener, EVENT_RECEIVER_POLL};
+use crate::nakamoto_node::stackerdb_listener::{
+    InitialChunksLoader, StackerDBListener, EVENT_RECEIVER_POLL,
+};
 use crate::neon::Counters;
 use crate::Config;
 
@@ -110,6 +113,7 @@ impl SignerCoordinator {
         stackerdb_channel: Arc<Mutex<StackerDBChannel>>,
         node_keep_running: Arc<AtomicBool>,
         reward_set: &RewardSet,
+        initial_chunks_loader: InitialChunksLoader,
         election_block: &BlockSnapshot,
         burnchain: &Burnchain,
         message_key: StacksPrivateKey,
@@ -125,6 +129,7 @@ impl SignerCoordinator {
             node_keep_running,
             keep_running.clone(),
             reward_set,
+            initial_chunks_loader,
             election_block,
             burnchain,
             config,
@@ -249,7 +254,7 @@ impl SignerCoordinator {
                     debug!("Wrote message to stackerdb: {ack:?}");
                     Ok(())
                 } else {
-                    Err(NakamotoNodeError::StackerDBUploadError(ack))
+                    Err(NakamotoNodeError::StackerDBUploadError(ack.into()))
                 }
             }
             Err(e) => Err(NakamotoNodeError::SigningCoordinatorFailure(format!(
@@ -281,6 +286,7 @@ impl SignerCoordinator {
         counters: &Counters,
         election_sortition: &BlockSnapshot,
         miner_db: &MinerDB,
+        miner_diagnostic_data: MinerDiagnosticData,
     ) -> Result<Vec<MessageSignature>, NakamotoNodeError> {
         // Add this block to the block status map.
         self.stackerdb_comms.insert_block(&block.header);
@@ -293,7 +299,7 @@ impl SignerCoordinator {
             block: block.clone(),
             burn_height: election_sortition.block_height,
             reward_cycle: reward_cycle_id,
-            block_proposal_data: BlockProposalData::from_current_version(),
+            block_proposal_data: BlockProposalData::from_current_version(miner_diagnostic_data),
         };
 
         let block_proposal_message = SignerMessageV0::BlockProposal(block_proposal);
@@ -511,7 +517,27 @@ impl SignerCoordinator {
                     "signer_signature_hash" => %block_signer_sighash,
                 );
                 counters.bump_naka_rejected_blocks();
-                return Err(NakamotoNodeError::SignersRejected);
+
+                // Only act on failed txids that a blocking minority (>30% weight) agrees on
+                let blocking_minority = self.total_weight.saturating_sub(self.weight_threshold);
+                let mut temporarily_excluded_txids = HashSet::new();
+                let mut permanently_excluded_txids = HashSet::new();
+                for (txid, info) in &block_status.failed_txids {
+                    if info.total_weight > blocking_minority {
+                        // Do not perma ban txids that only a small minority of signers reported as problematic
+                        // But make sure its removed from the next block proposal
+                        if info.problematic_weight > blocking_minority {
+                            permanently_excluded_txids.insert(txid.clone());
+                        } else {
+                            temporarily_excluded_txids.insert(txid.clone());
+                        }
+                    }
+                }
+
+                return Err(NakamotoNodeError::SignersRejected {
+                    temporarily_excluded_txids,
+                    permanently_excluded_txids,
+                });
             } else if block_status.total_weight_approved >= self.weight_threshold {
                 info!("Received enough signatures, block accepted";
                     "signer_signature_hash" => %block_signer_sighash,

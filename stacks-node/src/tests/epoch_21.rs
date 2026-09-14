@@ -1,9 +1,24 @@
+// Copyright (C) 2022-2026 Stacks Open Internet Foundation
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
 use std::collections::{HashMap, HashSet};
 use std::{env, thread};
 
 use ::core::str;
 use clarity::vm::types::{PrincipalData, QualifiedContractIdentifier};
-use clarity::vm::{execute_with_parameters as execute, ClarityVersion, Value};
+use clarity::vm::{execute_with_parameters as execute, ClarityVersion, ContractName, Value};
 use stacks::burnchains::bitcoin::address::{
     BitcoinAddress, LegacyBitcoinAddressType, SegwitBitcoinAddress,
 };
@@ -42,6 +57,7 @@ use crate::operations::BurnchainOpSigner;
 use crate::stacks_common::address::AddressHashMode;
 use crate::stacks_common::types::Address;
 use crate::stacks_common::util::hash::{bytes_to_hex, hex_bytes};
+use crate::tests::nakamoto_integrations::wait_for;
 use crate::tests::neon_integrations::*;
 use crate::tests::*;
 use crate::{neon, BitcoinRegtestController, BurnchainController, Keychain};
@@ -97,6 +113,7 @@ fn advance_to_2_1(
         15,
         u64::MAX - 2,
         u64::MAX - 1,
+        u32::MAX,
         u32::MAX,
         u32::MAX,
         u32::MAX,
@@ -602,6 +619,7 @@ fn transition_fixes_bitcoin_rigidity() {
         u32::MAX,
         u32::MAX,
         u32::MAX,
+        u32::MAX,
     );
     burnchain_config.pox_constants = pox_constants;
 
@@ -626,6 +644,7 @@ fn transition_fixes_bitcoin_rigidity() {
 
     let mut run_loop = neon::RunLoop::new(conf.clone());
     let blocks_processed = run_loop.get_blocks_processed_arc();
+    let counters = run_loop.get_counters();
 
     let channel = run_loop.get_coordinator_channel().unwrap();
 
@@ -681,10 +700,8 @@ fn transition_fixes_bitcoin_rigidity() {
     // mine it
     next_block_and_wait(&mut btc_regtest_controller, &blocks_processed);
 
-    // let's fire off a transfer op that will not land in the Stacks 2.1 epoch.  It should not be
-    // applied, even though it's within 6 blocks of the next Stacks block, which will be in epoch
-    // 2.1.  This verifies that the new burnchain consideration window only applies to sortitions
-    // that happen in Stacks 2.1.
+    // Fire off a transfer op that lands pre-2.1, within window distance of the 2.1 boundary: the
+    // 2.1 burnchain consideration window must not reach back before the 2.1 epoch start.
     let recipient_sk = StacksPrivateKey::random();
     let recipient_addr = to_addr(&recipient_sk);
     let transfer_stx_op = TransferStxOp {
@@ -712,11 +729,30 @@ fn transition_fixes_bitcoin_rigidity() {
         "Transfer operation should submit successfully"
     );
 
-    // mine it without a sortition
+    let parent_burn_height = get_chain_info(&conf).burn_block_height;
+    let op_burn_height = parent_burn_height + 1;
+    // the op's block must win a sortition to preserve the expected miner nonce
+    wait_for_tip_commit(&conf, &counters, 60)
+        .expect("Timed out waiting for the miner to submit a block-commit");
     btc_regtest_controller.build_next_block(1);
 
+    let empty_burn_height = op_burn_height + 1;
+    // a sortition here would elect a block that processes the transfer under pre-2.1 rules
+    btc_regtest_controller.build_empty_block();
+
+    // the epoch-boundary checks below require sortitions again
+    wait_for(60, || {
+        Ok(counters.neon_submitted_commit_last_burn_height.get() >= empty_burn_height)
+    })
+    .expect("Timed out waiting for the miner to re-submit its block-commit");
+    assert_eq!(
+        get_chain_info(&conf).burn_block_height,
+        empty_burn_height,
+        "The empty block should be the burn tip before crossing into 2.1"
+    );
+
     // these should all succeed across the epoch 2.1 boundary
-    for _i in 0..3 {
+    for _i in 0..2 {
         let tip_info = get_chain_info(&conf);
 
         // this block is the epoch transition?
@@ -1042,6 +1078,7 @@ fn transition_adds_get_pox_addr_recipients() {
         u32::MAX,
         u32::MAX,
         u32::MAX,
+        u32::MAX,
     );
 
     let mut spender_sks = vec![];
@@ -1353,6 +1390,7 @@ fn transition_adds_mining_from_segwit() {
         u32::MAX,
         u32::MAX,
         u32::MAX,
+        u32::MAX,
     );
 
     let mut initial_balances = vec![];
@@ -1505,6 +1543,7 @@ fn transition_removes_pox_sunset() {
         sunset_start_rc * reward_cycle_len - 1,
         sunset_end_rc * reward_cycle_len,
         (epoch_21 as u32) + 1,
+        u32::MAX,
         u32::MAX,
         u32::MAX,
         u32::MAX,
@@ -1768,6 +1807,7 @@ fn transition_empty_blocks() {
         u32::MAX,
         u32::MAX,
         u32::MAX,
+        u32::MAX,
     );
     burnchain_config.pox_constants = pox_constants;
 
@@ -1925,10 +1965,10 @@ fn transition_empty_blocks() {
             let tx_bytes = hex_bytes(&raw_tx[2..]).unwrap();
             let parsed = StacksTransaction::consensus_deserialize(&mut &tx_bytes[..]).unwrap();
             if let TransactionPayload::SmartContract(tsc, ..) = parsed.payload {
-                if tsc.name == "pox-2".into() {
+                if tsc.name == ContractName::from_literal("pox-2") {
                     have_pox2 = true;
                 }
-                if tsc.name == "costs-3".into() {
+                if tsc.name == ContractName::from_literal("costs-3") {
                     have_costs3 = true;
                 }
             }
@@ -2111,6 +2151,7 @@ fn test_sortition_divergence_pre_21() {
             (1600 * reward_cycle_len - 1).into(),
             (1700 * reward_cycle_len).into(),
             v1_unlock_height,
+            u32::MAX,
             u32::MAX,
             u32::MAX,
             u32::MAX,
@@ -2468,6 +2509,7 @@ fn trait_invocation_cross_epoch() {
         u32::MAX,
         u32::MAX,
         u32::MAX,
+        u32::MAX,
     );
     burnchain_config.pox_constants = pox_constants;
 
@@ -2733,6 +2775,7 @@ fn test_v1_unlock_height_with_current_stackers() {
         u32::MAX,
         u32::MAX,
         u32::MAX,
+        u32::MAX,
     );
     burnchain_config.pox_constants = pox_constants;
 
@@ -2989,6 +3032,7 @@ fn test_v1_unlock_height_with_delay_and_current_stackers() {
         u64::MAX - 2,
         u64::MAX - 1,
         v1_unlock_height as u32,
+        u32::MAX,
         u32::MAX,
         u32::MAX,
         u32::MAX,

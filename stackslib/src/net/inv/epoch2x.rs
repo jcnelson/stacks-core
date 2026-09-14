@@ -18,9 +18,8 @@ use std::cmp;
 use std::collections::{HashMap, HashSet};
 
 use p2p::DropSource;
-use rand;
 use rand::seq::SliceRandom;
-use rand::thread_rng;
+use rand::{self, thread_rng};
 use stacks_common::types::chainstate::{BlockHeaderHash, PoxId};
 use stacks_common::util::get_epoch_time_secs;
 
@@ -1673,37 +1672,6 @@ impl PeerNetwork {
             consensus_hash: ancestor_sn.consensus_hash,
             num_blocks: num_blocks as u16,
         }))
-    }
-
-    /// Is a peer worth talking to?
-    fn is_peer_target(&self, nk: &NeighborKey) -> bool {
-        // don't talk to inbound peers; only outbound (and only ones we have the key for)
-        // (we make this check each time we begin a round of requests, since the set of
-        // available peers can change during this time).
-        match self.events.get(nk) {
-            Some(event_id) => match self.peers.get(event_id) {
-                Some(convo) => {
-                    if !convo.is_outbound() {
-                        debug!("{:?}: skip {:?}: not outbound", &self.local_peer, convo);
-                        return false;
-                    }
-                    if !convo.is_authenticated() {
-                        debug!(
-                            "{:?}: skip {:?}: not authenticated",
-                            &self.local_peer, convo
-                        );
-                        return false;
-                    }
-                    return true;
-                }
-                None => {
-                    return false;
-                }
-            },
-            None => {
-                return false;
-            }
-        }
     }
 
     /// Make a possible GetPoxInv request for this neighbor.

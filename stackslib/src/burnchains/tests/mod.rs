@@ -14,6 +14,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 pub mod burnchain;
+pub mod cycle_dispatch;
 pub mod db;
 pub mod thread_join;
 
@@ -44,26 +45,6 @@ use crate::util_lib::db::*;
 // all SPV headers will have this timestamp, so that multiple burnchain nodes will always have the
 // same SPV header timestamps regardless of when they are instantiated.
 pub const BURNCHAIN_TEST_BLOCK_TIME: u64 = 1629739098;
-
-impl Txid {
-    pub fn from_test_data(
-        block_height: u64,
-        vtxindex: u32,
-        burn_header_hash: &BurnchainHeaderHash,
-        noise: u64,
-    ) -> Txid {
-        let mut bytes = vec![];
-        bytes.extend_from_slice(&block_height.to_be_bytes());
-        bytes.extend_from_slice(&vtxindex.to_be_bytes());
-        bytes.extend_from_slice(burn_header_hash.as_bytes());
-        bytes.extend_from_slice(&noise.to_be_bytes());
-        let h = DoubleSha256::from_data(&bytes[..]);
-        let mut hb = [0u8; 32];
-        hb.copy_from_slice(h.as_bytes());
-
-        Txid(hb)
-    }
-}
 
 impl BurnchainBlockHeader {
     pub fn from_parent_snapshot(
@@ -310,6 +291,12 @@ impl TestMiner {
 }
 
 // creates miners deterministically
+impl Default for TestMinerFactory {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TestMinerFactory {
     pub fn new() -> TestMinerFactory {
         TestMinerFactory {
@@ -640,12 +627,11 @@ impl TestBurnchainBlock {
         R: RewardSetProvider,
         CE: CostEstimator,
         FE: FeeEstimator,
-        B: BurnchainHeaderReader,
     >(
         &self,
         db: &mut SortitionDB,
         burnchain: &Burnchain,
-        coord: &mut ChainsCoordinator<'_, T, N, R, CE, FE, B>,
+        coord: &mut ChainsCoordinator<'_, T, N, R, CE, FE>,
     ) -> BlockSnapshot {
         let mut indexer = BitcoinIndexer::new_unit_test(&burnchain.working_dir);
         let parent_hdr = indexer
@@ -780,12 +766,11 @@ impl TestBurnchainFork {
         R: RewardSetProvider,
         CE: CostEstimator,
         FE: FeeEstimator,
-        B: BurnchainHeaderReader,
     >(
         &mut self,
         db: &mut SortitionDB,
         burnchain: &Burnchain,
-        coord: &mut ChainsCoordinator<'_, T, N, R, CE, FE, B>,
+        coord: &mut ChainsCoordinator<'_, T, N, R, CE, FE>,
     ) -> BlockSnapshot {
         let mut snapshot = {
             let ic = db.index_conn();
@@ -811,6 +796,8 @@ impl TestBurnchainFork {
     }
 }
 
+// A default would hide test database initialization and a possible panic.
+#[allow(clippy::new_without_default)]
 impl TestBurnchainNode {
     pub fn new() -> TestBurnchainNode {
         let first_block_height = 100;

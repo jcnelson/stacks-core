@@ -1,4 +1,4 @@
-// Copyright (C) 2024 Stacks Open Internet Foundation
+// Copyright (C) 2024-2026 Stacks Open Internet Foundation
 //
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
@@ -22,18 +22,20 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
 use libsigner::v0::messages::{
-    BlockAccepted, BlockResponse, MessageSlotID, SignerMessage as SignerMessageV0,
+    BlockAccepted, BlockResponse, MessageSlotID, RejectCode, SignerMessage as SignerMessageV0,
     StateMachineUpdate,
 };
 use libsigner::v0::signer_state::{GlobalStateEvaluator, SignerStateMachine};
-use libsigner::{SignerEntries, SignerEvent, SignerSession, StackerDBSession};
-use stacks::burnchains::Burnchain;
+use libsigner::{SignerEntries, SignerEvent};
+use stacks::burnchains::{Burnchain, Txid};
 use stacks::chainstate::burn::BlockSnapshot;
 use stacks::chainstate::nakamoto::NakamotoBlockHeader;
 use stacks::chainstate::stacks::boot::{NakamotoSignerEntry, RewardSet, SIGNERS_NAME};
 use stacks::chainstate::stacks::events::StackerDBChunksEvent;
 use stacks::chainstate::stacks::Error as ChainstateError;
 use stacks::codec::StacksMessageCodec;
+use stacks::net::api::postblock_proposal::ValidateRejectCode;
+use stacks::net::stackerdb::StackerDBs;
 use stacks::types::chainstate::{StacksAddress, StacksPublicKey};
 use stacks::types::PublicKey;
 use stacks::util::get_epoch_time_secs;
@@ -55,6 +57,16 @@ pub static TEST_IGNORE_SIGNERS: LazyLock<TestFlag<bool>> = LazyLock::new(TestFla
 /// waking up to check timeouts?
 pub static EVENT_RECEIVER_POLL: Duration = Duration::from_millis(500);
 
+/// Tracks per-txid rejection data from signers
+#[derive(Debug, Clone, Default)]
+pub struct FailedTxInfo {
+    /// The total weight of signers who reported this txid as failed
+    pub total_weight: u32,
+    /// The weight of signers who specifically reported this txid as
+    /// genuinely problematic (e.g. DDoS vector, parse error, Clarity crash)
+    pub problematic_weight: u32,
+}
+
 #[derive(Debug, Clone)]
 pub struct BlockStatus {
     /// Set of the slot ids of signers who have responded
@@ -65,12 +77,54 @@ pub struct BlockStatus {
     pub total_weight_approved: u32,
     /// Total weight of signers who have rejected the block
     pub total_weight_rejected: u32,
+    /// Per-txid rejection tracking from signers
+    pub failed_txids: HashMap<Txid, FailedTxInfo>,
 }
 
 #[derive(Debug, Clone)]
 pub(crate) struct TimestampInfo {
     pub timestamp: u64,
     pub weight: u32,
+}
+
+/// Captures all necessary data the miner has to provide so that the [`StackerDBListener`] can
+/// load the initial state of the StackerDB. The miner creates an [`InitialChunksLoader`] and
+/// then passes it to the [`StackerDBListener`] (via the [`SignerCoordinator`]).
+pub struct InitialChunksLoader<'a> {
+    reward_cycle_id: u64,
+    signer_count: u32,
+    stacker_dbs: &'a StackerDBs,
+}
+
+impl<'a> InitialChunksLoader<'a> {
+    pub fn new(
+        reward_cycle_id: u64,
+        signer_count: u32,
+        stacker_dbs: &'a StackerDBs,
+    ) -> InitialChunksLoader<'a> {
+        InitialChunksLoader {
+            reward_cycle_id,
+            signer_count,
+            stacker_dbs,
+        }
+    }
+
+    fn load_chunks(&self, config: &Config) -> Vec<Option<Vec<u8>>> {
+        if self.signer_count == 0 {
+            return vec![];
+        }
+
+        // the contract that a StackerDBListener actually cares about: The one with
+        // the signer state machine updates
+        let signers_contract = MessageSlotID::StateMachineUpdate
+            .stacker_db_contract(config.is_mainnet(), self.reward_cycle_id);
+        let slot_ids: Vec<u32> = (0..self.signer_count).collect();
+
+        self.stacker_dbs
+            .get_latest_chunks(&signers_contract, slot_ids.as_slice())
+            .inspect_err(|e| warn!("Unable to read the latest signer state from signer db: {e}."))
+            .unwrap_or_default()
+    }
 }
 
 /// The listener for the StackerDB, which listens for messages from the
@@ -138,6 +192,7 @@ impl StackerDBListener {
         node_keep_running: Arc<AtomicBool>,
         keep_running: Arc<AtomicBool>,
         reward_set: &RewardSet,
+        initial_chunks_loader: InitialChunksLoader,
         burn_tip: &BlockSnapshot,
         burnchain: &Burnchain,
         config: &Config,
@@ -163,7 +218,7 @@ impl StackerDBListener {
         let signer_set =
             u32::try_from(reward_cycle_id % 2).expect("FATAL: reward cycle id % 2 exceeds u32");
 
-        let Some(ref reward_set_signers) = reward_set.signers else {
+        let Some(reward_set_signers) = reward_set.signers() else {
             error!("Could not initialize signing coordinator for reward set without signer");
             debug!("reward set: {reward_set:?}");
             return Err(ChainstateError::NoRegisteredSigners(0));
@@ -183,27 +238,14 @@ impl StackerDBListener {
             })
             .collect::<Result<HashMap<_, _>, ChainstateError>>()?;
 
-        let signers_contract_id = MessageSlotID::StateMachineUpdate
-            .stacker_db_contract(config.is_mainnet(), reward_cycle_id);
-        let rpc_socket = config
-            .node
-            .get_rpc_loopback()
-            .ok_or_else(|| ChainstateError::MinerAborted)?;
-        let mut signers_session = StackerDBSession::new(
-            &rpc_socket.to_string(),
-            signers_contract_id.clone(),
-            config.miner.stackerdb_timeout,
-        );
         let entries: Vec<_> = signer_entries.values().cloned().collect();
         let parsed_entries = SignerEntries::parse(config.is_mainnet(), &entries)
             .expect("FATAL: could not parse retrieved signer entries");
         let address_weights = parsed_entries.signer_addr_to_weight;
         let slot_ids: Vec<_> = parsed_entries.signer_id_to_addr.keys().cloned().collect();
 
-        let chunks = signers_session
-            .get_latest_chunks(&slot_ids)
-            .inspect_err(|e| warn!("Unable to read the latest signer state from signer db: {e}."))
-            .unwrap_or_default();
+        let chunks = initial_chunks_loader.load_chunks(config);
+
         let mut global_state_evaluator = GlobalStateEvaluator::new(HashMap::new(), address_weights);
         for (chunk, slot_id) in chunks.into_iter().zip(slot_ids) {
             let Some(chunk) = chunk else {
@@ -401,8 +443,7 @@ impl StackerDBListener {
                         if !block.gathered_signatures.contains_key(&slot_id) {
                             block.total_weight_approved = block
                                 .total_weight_approved
-                                .checked_add(signer_entry.weight)
-                                .expect("FATAL: total weight signed exceeds u32::MAX");
+                                .saturating_add(signer_entry.weight);
 
                             info!("StackerDBListener: Signature Added to block";
                                 "signer_signature_hash" => %block_sighash,
@@ -474,8 +515,35 @@ impl StackerDBListener {
                         if block.responded_signers.insert(slot_id) {
                             block.total_weight_rejected = block
                                 .total_weight_rejected
-                                .checked_add(signer_entry.weight)
-                                .expect("FATAL: total weight rejected exceeds u32::MAX");
+                                .saturating_add(signer_entry.weight);
+
+                            // Track transactions that failed validation, accumulating
+                            // per-txid signer weight and whether any signer flagged
+                            // the tx as genuinely problematic.
+                            if let Some(txid) = &rejected_data.response_data.failed_txid {
+                                match &rejected_data.reason_code {
+                                    RejectCode::ValidationFailed(
+                                        ValidateRejectCode::BadTransaction
+                                        | ValidateRejectCode::ProblematicTransaction,
+                                    ) => {
+                                        let info =
+                                            block.failed_txids.entry(txid.clone()).or_default();
+                                        info.total_weight =
+                                            info.total_weight.saturating_add(signer_entry.weight);
+                                        if matches!(
+                                            rejected_data.reason_code,
+                                            RejectCode::ValidationFailed(
+                                                ValidateRejectCode::ProblematicTransaction
+                                            )
+                                        ) {
+                                            info.problematic_weight = info
+                                                .problematic_weight
+                                                .saturating_add(signer_entry.weight);
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                            }
 
                             info!("StackerDBListener: Signer rejected block";
                                 "signer_signature_hash" => %rejected_data.signer_signature_hash,
@@ -488,9 +556,10 @@ impl StackerDBListener {
                                 "total_weight_rejected" => block.total_weight_rejected,
                                 "percent_rejected" => block.total_weight_rejected as f64 / self.total_weight as f64 * 100.0,
                                 "weight_threshold" => self.weight_threshold,
-                                "reason" => rejected_data.reason,
+                                "reason" => %rejected_data.reason,
                                 "reason_code" => ?rejected_data.reason_code,
                                 "tenure_extend_timestamp" => rejected_data.response_data.tenure_extend_timestamp,
+                                "failed_txid" => ?rejected_data.response_data.failed_txid,
                                 "server_version" => rejected_data.metadata.server_version,
                             );
                         }
@@ -629,6 +698,7 @@ impl StackerDBListenerComms {
             gathered_signatures: BTreeMap::new(),
             total_weight_approved: 0,
             total_weight_rejected: 0,
+            failed_txids: HashMap::new(),
         };
         blocks.insert(block.signer_signature_hash(), block_status);
     }

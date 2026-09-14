@@ -19,16 +19,18 @@
 
 use std::convert::TryFrom;
 
-use clarity_types::errors::RuntimeCheckErrorKind;
 use clarity_types::types::{
     AssetIdentifier, PrincipalData, QualifiedContractIdentifier, StandardPrincipalData,
 };
-use clarity_types::{ClarityName, Value};
+use clarity_types::{ClarityName, ContractName, Value};
+use pinny::tag;
 use proptest::prelude::*;
 use proptest::test_runner::{TestCaseError, TestCaseResult};
+use stacks_common::bounded_format;
 use stacks_common::types::StacksEpochId;
 
 use crate::vm::ClarityVersion;
+use crate::vm::analysis::errors::RuntimeCheckErrorKind;
 use crate::vm::analysis::type_checker::v2_1::natives::post_conditions::MAX_ALLOWANCES;
 use crate::vm::contexts::AssetMap;
 use crate::vm::errors::{ClarityEvalError, EarlyReturnError, VmExecutionError, VmInternalError};
@@ -743,7 +745,8 @@ fn test_as_contract_bad_transfer_with_short_return_in_body() {
   )
 )"#;
     let sender = StandardPrincipalData::transient();
-    let contract_id = QualifiedContractIdentifier::new(sender.clone(), "contract".into());
+    let contract_id =
+        QualifiedContractIdentifier::new(sender.clone(), ContractName::from_literal("contract"));
     let contract = PrincipalData::Contract(contract_id);
     let expected = Value::error(Value::UInt(0)).unwrap();
     let opt_value = execute_and_check(snippet, sender.clone(), |g| {
@@ -768,7 +771,6 @@ fn test_as_contract_good_transfer_with_short_return_in_body() {
     true
   )
 )"#;
-    let sender = StandardPrincipalData::transient();
     let expected_err = Value::error(Value::UInt(200)).unwrap();
     let short_return: ClarityEvalError =
         VmExecutionError::EarlyReturn(EarlyReturnError::UnwrapFailed(expected_err.into())).into();
@@ -790,7 +792,8 @@ fn test_as_contract_bad_transfer_with_early_return_ok_in_body() {
   )
 )"#;
     let sender = StandardPrincipalData::transient();
-    let contract_id = QualifiedContractIdentifier::new(sender.clone(), "contract".into());
+    let contract_id =
+        QualifiedContractIdentifier::new(sender.clone(), ContractName::from_literal("contract"));
     let contract = PrincipalData::Contract(contract_id);
     let expected = Value::error(Value::UInt(0)).unwrap();
     let opt_value = execute_and_check(snippet, sender.clone(), |g| {
@@ -1620,7 +1623,6 @@ fn test_restrict_assets_good_transfer_with_short_return_in_body() {
     true
   )
 )"#;
-    let sender = StandardPrincipalData::transient();
     let expected_err = Value::error(Value::UInt(200)).unwrap();
     let short_return: ClarityEvalError =
         VmExecutionError::EarlyReturn(EarlyReturnError::UnwrapFailed(expected_err.into())).into();
@@ -1683,7 +1685,7 @@ fn restrict_assets_too_many_allowances() {
             .join(" ")
     );
     let max_allowances_err: ClarityEvalError =
-        VmExecutionError::RuntimeCheck(RuntimeCheckErrorKind::Unreachable(format!(
+        VmExecutionError::RuntimeCheck(RuntimeCheckErrorKind::Unreachable(bounded_format!(
             "Too many allowances: got {}, allowed {MAX_ALLOWANCES}",
             MAX_ALLOWANCES + 1
         )))
@@ -1701,7 +1703,7 @@ fn expected_allowance_expr_error() {
     let snippet = "(restrict-assets? tx-sender ((bad-fn u1)) true)";
 
     let expected_error: ClarityEvalError = VmExecutionError::RuntimeCheck(
-        RuntimeCheckErrorKind::Unreachable("Expected allowance expr: bad-fn".to_string()),
+        RuntimeCheckErrorKind::Unreachable("Expected allowance expr: bad-fn".into()),
     )
     .into();
 
@@ -1720,7 +1722,7 @@ fn expected_allowance_expr_error_unhandled_native() {
     let snippet = "(restrict-assets? tx-sender ((tx-sender u1)) true)";
 
     let expected_error: ClarityEvalError = VmExecutionError::RuntimeCheck(
-        RuntimeCheckErrorKind::Unreachable("Expected allowance expr: tx-sender".to_string()),
+        RuntimeCheckErrorKind::Unreachable("Expected allowance expr: tx-sender".into()),
     )
     .into();
 
@@ -1736,7 +1738,7 @@ fn allowance_expr_not_allowed() {
     let snippet = "(with-stx u1)";
 
     let expected: ClarityEvalError = VmExecutionError::RuntimeCheck(
-        RuntimeCheckErrorKind::Unreachable("Allowance expr not allowed".to_string()),
+        RuntimeCheckErrorKind::Unreachable("Allowance expr not allowed".into()),
     )
     .into();
 
@@ -1758,7 +1760,7 @@ fn restrict_assets_expected_list_of_allowances() {
     "#;
     let expected_error: ClarityEvalError =
         VmExecutionError::RuntimeCheck(RuntimeCheckErrorKind::Unreachable(
-            "Expected list of allowances: for restrict-assets? as argument 2".to_string(),
+            "Expected list of allowances: for restrict-assets? as argument 2".into(),
         ))
         .into();
 
@@ -1781,7 +1783,7 @@ fn as_contract_expected_list_of_allowances() {
     // The argument is `u42` (not a list), so we expect this error
     let expected_error: ClarityEvalError =
         VmExecutionError::RuntimeCheck(RuntimeCheckErrorKind::Unreachable(
-            "Expected list of allowances: for as-contract? as argument 1".to_string(),
+            "Expected list of allowances: for as-contract? as argument 1".into(),
         ))
         .into();
 
@@ -1899,6 +1901,7 @@ const TOKEN_DEFINITIONS: &str = r#"
 "#;
 
 proptest! {
+    #[tag(t_prop)]
     #[test]
     fn prop_restrict_assets_returns_body_value_when_pure(
         body_value in clarity_values_no_response(),
@@ -1916,6 +1919,7 @@ proptest! {
         prop_assert_eq!(expected, evaluation);
     }
 
+    #[tag(t_prop)]
     #[test]
     fn prop_restrict_assets_returns_value_with_allowances(
         allowances in allowance_list_snippets(),
@@ -1934,6 +1938,7 @@ proptest! {
         prop_assert_eq!(expected, evaluation);
     }
 
+    #[tag(t_prop)]
     #[test]
     fn prop_restrict_assets_errors_when_no_allowances_and_body_moves_stx(
         sender in standard_principal_strategy(),
@@ -1960,6 +1965,7 @@ proptest! {
         .unwrap();
     }
 
+    #[tag(t_prop)]
     #[test]
     fn prop_restrict_assets_errors_when_no_ft_allowance(
         sender in standard_principal_strategy(),
@@ -1976,7 +1982,7 @@ proptest! {
         let asset_identifier = AssetIdentifier {
             contract_identifier: QualifiedContractIdentifier::new(
                 sender.clone(),
-                "contract".into(),
+                ContractName::from_literal("contract"),
             ),
             asset_name: ClarityName::try_from("stackos".to_string())
                 .expect("valid fungible token name"),
@@ -2003,6 +2009,7 @@ proptest! {
         .unwrap();
     }
 
+    #[tag(t_prop)]
     #[test]
     fn prop_restrict_assets_errors_when_no_nft_allowance(
         sender in standard_principal_strategy(),
@@ -2019,7 +2026,7 @@ proptest! {
         let asset_identifier = AssetIdentifier {
             contract_identifier: QualifiedContractIdentifier::new(
                 sender.clone(),
-                "contract".into(),
+                ContractName::from_literal("contract"),
             ),
             asset_name: ClarityName::try_from("stackaroo".to_string())
                 .expect("valid non-fungible token name"),
@@ -2047,6 +2054,7 @@ proptest! {
         .unwrap();
     }
 
+    #[tag(t_prop)]
     #[test]
     fn prop_as_contract_returns_body_value_when_pure(
         body_value in clarity_values_no_response(),
@@ -2064,6 +2072,7 @@ proptest! {
         prop_assert_eq!(expected, evaluation);
     }
 
+    #[tag(t_prop)]
     #[test]
     fn prop_as_contract_returns_value_with_allowances(
         allowances in allowance_list_snippets(),
@@ -2082,6 +2091,7 @@ proptest! {
         prop_assert_eq!(expected, evaluation);
     }
 
+    #[tag(t_prop)]
     #[test]
     fn prop_as_contract_errors_when_no_allowances_and_body_moves_stx(
         sender in standard_principal_strategy(),
@@ -2089,7 +2099,7 @@ proptest! {
     ) {
         let snippet = format!("(as-contract? () {body})");
         let c3_snippet = format!("(as-contract {body})");
-        let contract_id = QualifiedContractIdentifier::new(sender.clone(), "contract".into());
+        let contract_id = QualifiedContractIdentifier::new(sender.clone(), ContractName::from_literal("contract"));
         let contract = PrincipalData::Contract(contract_id);
         assert_results_match(
             (c3_snippet.as_str(), ClarityVersion::Clarity3),
@@ -2110,6 +2120,7 @@ proptest! {
         .unwrap();
     }
 
+    #[tag(t_prop)]
     #[test]
     fn prop_as_contract_with_all_assets_unsafe_matches_clarity3(
         sender in standard_principal_strategy(),
@@ -2130,6 +2141,7 @@ proptest! {
         .unwrap();
     }
 
+    #[tag(t_prop)]
     #[test]
     fn prop_as_contract_with_transfers_and_allowances_matches_clarity3(
         sender in standard_principal_strategy(),
@@ -2155,6 +2167,7 @@ proptest! {
         .unwrap();
     }
 
+    #[tag(t_prop)]
     #[test]
     fn prop_restrict_assets_with_transfers_and_allowances_ok(
         sender in standard_principal_strategy(),
