@@ -140,7 +140,7 @@ impl FromRow<BlockCommitMetadata> for BlockCommitMetadata {
 /// - make sure there are no vtxindex duplicates
 pub(crate) fn apply_blockstack_txs_safety_checks(
     block_height: u64,
-    blockstack_txs: &mut Vec<BlockstackOperationType>,
+    blockstack_txs: &mut [BlockstackOperationType],
 ) {
     test_debug!(
         "Apply safety checks on {} txs at burnchain height {}",
@@ -531,7 +531,7 @@ impl BurnchainDB {
                             let pparent_path = ppath
                                 .parent()
                                 .unwrap_or_else(|| panic!("BUG: no parent of '{path}'"));
-                            fs::create_dir_all(&pparent_path)
+                            fs::create_dir_all(pparent_path)
                                 .map_err(|e| BurnchainError::from(DBError::IOError(e)))?;
 
                             OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_CREATE
@@ -727,7 +727,7 @@ impl BurnchainDB {
 
     pub fn has_burnchain_block(&self, block: &BurnchainHeaderHash) -> Result<bool, BurnchainError> {
         let qry = "SELECT 1 FROM burnchain_db_block_headers WHERE block_hash = ?1";
-        let res: Option<i64> = query_row(&self.conn, qry, &[block])?;
+        let res: Option<i64> = query_row(&self.conn, qry, [block])?;
         Ok(res.is_some())
     }
 
@@ -790,17 +790,12 @@ impl BurnchainDB {
 
         let ops: Vec<BlockstackOperationType> =
             query_rows(&self.conn, qry, args).expect("FATAL: burnchain DB query error");
-        for op in ops {
-            if indexer
+        ops.into_iter().find(|op| {
+            indexer
                 .find_burnchain_header_height(&op.burn_header_hash())
                 .expect("FATAL: burnchain DB query error")
                 .is_some()
-            {
-                // this is the op on the canonical fork
-                return Some(op);
-            }
-        }
-        None
+        })
     }
 
     /// Filter out the burnchain block's transactions that could be blockstack transactions.
@@ -898,7 +893,7 @@ impl BurnchainDB {
                 }
             }
         }
-        return Ok(None);
+        Ok(None)
     }
 
     pub fn get_canonical_anchor_block_commit<B: BurnchainHeaderReader>(
@@ -942,27 +937,6 @@ impl BurnchainDB {
         } else {
             Ok(None)
         }
-    }
-
-    /// Count the burn header hashes yielded by `canonical_sql` (a SELECT
-    /// producing one TEXT column) that have no `burnchain_db_block_headers`
-    /// row in `headers_schema`. Both arguments are interpolated into SQL;
-    /// pass only trusted fixed fragments.
-    pub(crate) fn count_canonical_burn_hashes_missing_from(
-        conn: &Connection,
-        headers_schema: &str,
-        canonical_sql: &str,
-    ) -> Result<u64, DBError> {
-        conn.query_row(
-            &format!(
-                "SELECT COUNT(*) FROM ({canonical_sql}) \
-                 WHERE burn_header_hash NOT IN \
-                     (SELECT block_hash FROM {headers_schema}.burnchain_db_block_headers)"
-            ),
-            NO_PARAMS,
-            |row| row.get(0),
-        )
-        .map_err(DBError::from)
     }
 }
 

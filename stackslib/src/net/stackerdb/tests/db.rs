@@ -30,8 +30,8 @@ use crate::net::{Error as net_error, StackerDBChunkData};
 
 fn setup_test_path(path: &str) {
     let dirname = Path::new(path).parent().unwrap().to_str().unwrap();
-    if fs::metadata(&dirname).is_err() {
-        fs::create_dir_all(&dirname).unwrap();
+    if fs::metadata(dirname).is_err() {
+        fs::create_dir_all(dirname).unwrap();
     }
     if fs::metadata(path).is_ok() {
         fs::remove_file(path).unwrap();
@@ -283,13 +283,13 @@ fn test_stackerdb_prepare_clear_slots() {
                 slot_validation.signer,
                 StacksAddress::new(0x02, Hash160([0x02; 20])).unwrap()
             );
-        } else if slot_id >= 2 && slot_id < 2 + 3 {
+        } else if (2..2 + 3).contains(&slot_id) {
             // belongs to 0x03
             assert_eq!(
                 slot_validation.signer,
                 StacksAddress::new(0x03, Hash160([0x03; 20])).unwrap()
             );
-        } else if slot_id >= 2 + 3 && slot_id < 2 + 3 + 4 {
+        } else if (2 + 3..2 + 3 + 4).contains(&slot_id) {
             // belongs to 0x03
             assert_eq!(
                 slot_validation.signer,
@@ -415,11 +415,13 @@ fn test_stackerdb_insert_query_chunks() {
         chunk_data.sign(pk).unwrap();
         if let Err(net_error::TooManySlotWrites {
             supplied_version,
+            latest_version,
             max_writes,
         }) = tx.try_replace_chunk(&sc, &chunk_data.get_slot_metadata(), &chunk_data.data)
         {
+            assert_eq!(supplied_version, db_config.max_writes + 1);
+            assert_eq!(latest_version, 1);
             assert_eq!(max_writes, db_config.max_writes);
-            assert_eq!(supplied_version, 1);
         } else {
             panic!("Did not get TooManySlotWrites");
         }

@@ -30,7 +30,7 @@ use tempfile::tempdir;
 
 use super::super::blocks::{
     assert_source_tables_classified, copy_confirmed_epoch2_microblocks, copy_epoch2_block_files,
-    copy_nakamoto_staging_blocks, nakamoto_copy_specs, NAKAMOTO_STAGING_TABLES,
+    copy_nakamoto_staging_blocks, nakamoto_copy_specs,
 };
 use super::super::common::clone_schemas_from_source;
 use super::{
@@ -161,22 +161,22 @@ fn test_no_unclassified_nakamoto_staging_tables() {
         .expect("fresh production Nakamoto staging schema must be fully classified");
 }
 
-/// Every cloned table (NAKAMOTO_STAGING_TABLES) must have a row-copy spec and vice versa,
-/// else it would be cloned but never populated (present-but-empty).
+/// Copy-spec coverage guard: no duplicate spec tables, and every Nakamoto
+/// staging spec row-copies (none accidentally schema-only). The `known_*` set
+/// derives from the specs, so a dropped spec is caught by the
+/// unclassified-table guard.
 #[test]
-fn test_nakamoto_copy_specs_match_staging_tables() {
-    let spec_tables: Vec<&str> = nakamoto_copy_specs().iter().map(|s| s.table).collect();
-    let spec_set: HashSet<&str> = spec_tables.iter().copied().collect();
+fn test_nakamoto_copy_specs_well_formed() {
+    let tables = nakamoto_copy_specs().table_names();
+    let spec_set: HashSet<&str> = tables.iter().copied().collect();
     assert_eq!(
-        spec_tables.len(),
+        tables.len(),
         spec_set.len(),
         "duplicate table in nakamoto_copy_specs"
     );
-    let staging_set: HashSet<&str> = NAKAMOTO_STAGING_TABLES.iter().copied().collect();
-    assert_eq!(
-        spec_set, staging_set,
-        "every NAKAMOTO_STAGING_TABLES entry must have exactly one copy spec (and vice versa); \
-         a cloned-but-uncopied table would be present-but-empty in the squash"
+    assert!(
+        nakamoto_copy_specs().schema_only().is_empty(),
+        "nakamoto staging has no schema-only tables; every spec must row-copy"
     );
 }
 
@@ -750,7 +750,7 @@ fn test_nakamoto_copy() {
         "parent_2",
         101,
         &ibhs[1],
-        "Shadow",
+        "Uploaded",
         b"block_data_2",
     );
     // Non-canonical block (not in the squashed index headers).
@@ -809,7 +809,7 @@ fn test_nakamoto_copy() {
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(method, "Shadow", "obtain_method must be preserved");
+    assert_eq!(method, "Uploaded", "obtain_method must be preserved");
 
     // Verify db_version matches source.
     let dst_ver: i64 = dst_conn

@@ -25,12 +25,11 @@ use self::contexts::ContractContext;
 pub use self::natives::{SimpleNativeFunction, TypedNativeFunction};
 use super::ContractAnalysis;
 use super::contexts::{TypeMap, TypingContext};
-use crate::vm::ClarityVersion;
 pub use crate::vm::analysis::errors::{
     StaticCheckError, StaticCheckErrorKind, SyntaxBindingErrorType, check_argument_count,
     check_arguments_at_least, check_arguments_at_most,
 };
-use crate::vm::analysis::{AnalysisDatabase, check_analysis_timeout};
+use crate::vm::analysis::{AnalysisDatabase, check_analysis_resource_limits};
 use crate::vm::costs::cost_functions::ClarityCostFunction;
 use crate::vm::costs::{
     CostErrors, CostOverflowingMath, CostTracker, ExecutionCost, LimitedCostTracker,
@@ -43,7 +42,7 @@ use crate::vm::representations::SymbolicExpressionType::{
     Atom, AtomValue, Field, List, LiteralValue, TraitReference,
 };
 use crate::vm::representations::{ClarityName, SymbolicExpression, depth_traverse};
-use crate::vm::time_tracker::TimeTracker;
+use crate::vm::resource_limiter::ResourceLimiter;
 use crate::vm::types::signatures::{
     CallableSubtype, FunctionArgSignature, FunctionReturnsSignature, FunctionSignature,
 };
@@ -54,6 +53,7 @@ use crate::vm::types::{
     TypeSignatureExt as _, Value, parse_name_type_pairs,
 };
 use crate::vm::variables::NativeVariables;
+use crate::vm::{ClarityVersion, is_reserved};
 
 #[cfg(test)]
 pub mod tests;
@@ -89,12 +89,12 @@ pub struct TypeChecker<'a, 'b> {
     db: &'a mut AnalysisDatabase<'b>,
     pub cost_track: LimitedCostTracker,
     clarity_version: ClarityVersion,
-    /// Wall-clock deadline for the analysis phase. `NoTracking` on the
-    /// deterministic-replay/commit path (so consensus stays deterministic);
-    /// `MaxTime` only on the non-consensus voting paths (mining / block-proposal
-    /// validation). Checked per node in `type_check` via
-    /// `check_analysis_abort_condition`, independent of cost charging.
-    time_tracker: TimeTracker,
+    /// Resource limits (wallclock deadline and max memory allocation) for the
+    /// analysis phase. Unlimited on the deterministic-replay/commit path (so
+    /// consensus stays deterministic); limited only on the non-consensus voting
+    /// paths (mining / block-proposal validation). Checked per node in `type_check` via
+    /// `check_analysis_resource_limits`, independent of cost charging.
+    resource_limiter: ResourceLimiter,
 }
 
 impl CostTracker for TypeChecker<'_, '_> {
@@ -118,15 +118,6 @@ impl CostTracker for TypeChecker<'_, '_> {
     fn reset_memory(&mut self) {
         self.cost_track.reset_memory()
     }
-    fn short_circuit_contract_call(
-        &mut self,
-        contract: &QualifiedContractIdentifier,
-        function: &ClarityName,
-        input: &[u64],
-    ) -> std::result::Result<bool, CostErrors> {
-        self.cost_track
-            .short_circuit_contract_call(contract, function, input)
-    }
 }
 
 impl TypeChecker<'_, '_> {
@@ -135,7 +126,7 @@ impl TypeChecker<'_, '_> {
         contract_analysis: &mut ContractAnalysis,
         analysis_db: &mut AnalysisDatabase,
         build_type_map: bool,
-        time_tracker: TimeTracker,
+        resource_limiter: ResourceLimiter,
     ) -> Result<(), StaticCheckError> {
         let cost_track = contract_analysis.take_contract_cost_tracker();
         let mut command = TypeChecker::new(
@@ -145,7 +136,7 @@ impl TypeChecker<'_, '_> {
             &contract_analysis.contract_identifier,
             &contract_analysis.clarity_version,
             build_type_map,
-            time_tracker,
+            resource_limiter,
         );
         // run the analysis, and replace the cost tracker whether or not the
         //   analysis succeeded.
@@ -177,37 +168,50 @@ pub fn compute_typecheck_cost<T: CostTracker>(
     )
 }
 
+/// Cost computation and type-check result for one function argument.
+pub struct ArgumentCheckOutcome {
+    /// Deferred cost result, retained even when argument checking fails.
+    pub cost: Option<Result<ExecutionCost, CostErrors>>,
+    /// Updated accumulated type, no update, or the argument's type error.
+    pub result: Result<Option<TypeSignature>, StaticCheckError>,
+}
+
 impl FunctionType {
-    #[allow(clippy::type_complexity)]
+    /// Checks one argument while preserving cost and type errors independently.
     pub fn check_args_visitor_2_1<T: CostTracker>(
         &self,
         accounting: &mut T,
         arg_type: &TypeSignature,
         arg_index: usize,
         accumulated_type: Option<&TypeSignature>,
-    ) -> (
-        Option<Result<ExecutionCost, CostErrors>>,
-        Result<Option<TypeSignature>, StaticCheckError>,
-    ) {
+    ) -> ArgumentCheckOutcome {
         match self {
             // variadic stops checking cost at the first error...
             FunctionType::Variadic(expected_type, _) => {
                 let cost = Some(compute_typecheck_cost(accounting, expected_type, arg_type));
                 let admitted = match expected_type.admits_type(&StacksEpochId::Epoch21, arg_type) {
                     Ok(admitted) => admitted,
-                    Err(e) => return (cost, Err(StaticCheckError::from(e))),
+                    Err(e) => {
+                        return ArgumentCheckOutcome {
+                            cost,
+                            result: Err(StaticCheckError::from(e)),
+                        };
+                    }
                 };
                 if !admitted {
-                    return (
+                    return ArgumentCheckOutcome {
                         cost,
-                        Err(StaticCheckErrorKind::TypeError(
+                        result: Err(StaticCheckErrorKind::TypeError(
                             Box::new(expected_type.clone()),
                             Box::new(arg_type.clone()),
                         )
                         .into()),
-                    );
+                    };
                 }
-                (cost, Ok(None))
+                ArgumentCheckOutcome {
+                    cost,
+                    result: Ok(None),
+                }
             }
             FunctionType::ArithmeticVariadic => {
                 let cost = Some(compute_typecheck_cost(
@@ -225,7 +229,10 @@ impl FunctionType {
                         )
                         .into()),
                     };
-                    (cost, return_type)
+                    ArgumentCheckOutcome {
+                        cost,
+                        result: return_type,
+                    }
                 } else {
                     let return_type = accumulated_type
                         .ok_or_else(|| StaticCheckErrorKind::Unreachable("Failed to set accumulated type for arg indices >= 1 in variadic arithmetic".into()).into());
@@ -240,7 +247,10 @@ impl FunctionType {
                             Ok(None)
                         }
                     });
-                    (cost, check_result)
+                    ArgumentCheckOutcome {
+                        cost,
+                        result: check_result,
+                    }
                 }
             }
             // For the fixed function types, the visitor will just
@@ -252,16 +262,19 @@ impl FunctionType {
             }) => {
                 if arg_index >= arg_types.len() {
                     // note: argument count will be wrong?
-                    return (
-                        None,
-                        Err(StaticCheckErrorKind::IncorrectArgumentCount(
+                    return ArgumentCheckOutcome {
+                        cost: None,
+                        result: Err(StaticCheckErrorKind::IncorrectArgumentCount(
                             arg_types.len(),
                             arg_index,
                         )
                         .into()),
-                    );
+                    };
                 }
-                (None, Ok(None))
+                ArgumentCheckOutcome {
+                    cost: None,
+                    result: Ok(None),
+                }
             }
             // For the following function types, the visitor will just
             //  tell the processor that any results greater than len 1 or 2
@@ -269,23 +282,33 @@ impl FunctionType {
             //  further checking anyways
             FunctionType::ArithmeticUnary | FunctionType::UnionArgs(..) => {
                 if arg_index >= 1 {
-                    return (
-                        None,
-                        Err(StaticCheckErrorKind::IncorrectArgumentCount(1, arg_index).into()),
-                    );
+                    return ArgumentCheckOutcome {
+                        cost: None,
+                        result: Err(
+                            StaticCheckErrorKind::IncorrectArgumentCount(1, arg_index).into()
+                        ),
+                    };
                 }
-                (None, Ok(None))
+                ArgumentCheckOutcome {
+                    cost: None,
+                    result: Ok(None),
+                }
             }
             FunctionType::ArithmeticBinary
             | FunctionType::ArithmeticComparison
             | FunctionType::Binary(..) => {
                 if arg_index >= 2 {
-                    return (
-                        None,
-                        Err(StaticCheckErrorKind::IncorrectArgumentCount(2, arg_index).into()),
-                    );
+                    return ArgumentCheckOutcome {
+                        cost: None,
+                        result: Err(
+                            StaticCheckErrorKind::IncorrectArgumentCount(2, arg_index).into()
+                        ),
+                    };
                 }
-                (None, Ok(None))
+                ArgumentCheckOutcome {
+                    cost: None,
+                    result: Ok(None),
+                }
             }
         }
     }
@@ -644,7 +667,7 @@ impl FunctionType {
                     &expected_arg.signature,
                     1,
                     &mut LimitedCostTracker::new_free(),
-                    &TimeTracker::unlimited(),
+                    &ResourceLimiter::unlimited(),
                 )?;
             }
         }
@@ -696,9 +719,9 @@ fn check_function_arg_signature<T: CostTracker>(
 /// caller turns that into `IncompatibleTrait`). Which errors propagate depends on
 /// the epoch:
 ///
-/// - `AnalysisTimeExpired` **always** propagates, in every epoch. The analysis
-///   deadline is configured only on the non-consensus voting paths (mining
-///   assembly / block-proposal validation) and is `NoTracking` on replay/commit,
+/// - `AnalysisResourceBudgetExceeded` **always** propagates, in every epoch. The
+///   analysis resource budget is limited only on the non-consensus voting paths (mining
+///   assembly / block-proposal validation) and is unlimited on replay/commit,
 ///   so it can never arise during consensus — propagating it changes no
 ///   deterministic outcome, which is why it needs no epoch gate.
 ///
@@ -723,7 +746,7 @@ fn mask_incompatible_or_propagate_error(
         StaticCheckErrorKind::TypeSignatureTooDeep => {
             Err(StaticCheckErrorKind::TraitReferenceChainTooDeep.into())
         }
-        StaticCheckErrorKind::AnalysisTimeExpired => Err(e),
+        StaticCheckErrorKind::AnalysisResourceBudgetExceeded(_) => Err(e),
         // Cost-tracking errors: propagate only from the gated epoch.
         StaticCheckErrorKind::CostOverflow
         | StaticCheckErrorKind::CostBalanceExceeded(..)
@@ -753,7 +776,7 @@ fn clarity2_check_functions_compatible<T: CostTracker>(
     actual_sig: &FunctionSignature,
     depth: u8,
     tracker: &mut T,
-    time_tracker: &TimeTracker,
+    resource_limiter: &ResourceLimiter,
 ) -> Result<bool, StaticCheckError> {
     if expected_sig.args.len() != actual_sig.args.len() {
         return Ok(false);
@@ -768,7 +791,7 @@ fn clarity2_check_functions_compatible<T: CostTracker>(
             expected_type,
             depth + 1,
             tracker,
-            time_tracker,
+            resource_limiter,
         ) {
             return mask_incompatible_or_propagate_error(e, epoch);
         }
@@ -781,7 +804,7 @@ fn clarity2_check_functions_compatible<T: CostTracker>(
         &expected_sig.returns,
         depth + 1,
         tracker,
-        time_tracker,
+        resource_limiter,
     ) {
         return mask_incompatible_or_propagate_error(e, epoch);
     }
@@ -803,7 +826,7 @@ pub fn clarity2_trait_check_trait_compliance<T: CostTracker>(
     expected_trait: &BTreeMap<ClarityName, FunctionSignature>,
     depth: u8,
     tracker: &mut T,
-    time_tracker: &TimeTracker,
+    resource_limiter: &ResourceLimiter,
 ) -> Result<(), StaticCheckError> {
     if depth > MAX_TYPE_DEPTH {
         return Err(StaticCheckErrorKind::TraitReferenceChainTooDeep.into());
@@ -824,7 +847,7 @@ pub fn clarity2_trait_check_trait_compliance<T: CostTracker>(
                 func,
                 depth,
                 tracker,
-                time_tracker,
+                resource_limiter,
             )? {
                 return Err(StaticCheckErrorKind::IncompatibleTrait(
                     Box::new(expected_trait_identifier.clone()),
@@ -854,7 +877,7 @@ fn clarity2_inner_type_check_type<T: CostTracker>(
     expected_type: &TypeSignature,
     depth: u8,
     cost_tracker: &mut T,
-    time_tracker: &TimeTracker,
+    resource_limiter: &ResourceLimiter,
 ) -> Result<TypeSignature, StaticCheckError> {
     if depth > MAX_TYPE_DEPTH {
         return Err(StaticCheckErrorKind::TypeSignatureTooDeep.into());
@@ -865,7 +888,7 @@ fn clarity2_inner_type_check_type<T: CostTracker>(
     // `type_check` node visit, so the per-node deadline check never fires while it
     // runs. Re-check the analysis deadline here: every cycle iteration passes
     // through this function, so one check bounds the whole trait-compliance graph.
-    check_analysis_timeout(time_tracker)?;
+    check_analysis_resource_limits(resource_limiter)?;
 
     // Recurse into values to check embedded traits properly
     match (actual_type, expected_type) {
@@ -881,7 +904,7 @@ fn clarity2_inner_type_check_type<T: CostTracker>(
                 expected_inner_type,
                 depth + 1,
                 cost_tracker,
-                time_tracker,
+                resource_limiter,
             )?;
         }
         (
@@ -896,7 +919,7 @@ fn clarity2_inner_type_check_type<T: CostTracker>(
                 &expected_inner_types.0,
                 depth + 1,
                 cost_tracker,
-                time_tracker,
+                resource_limiter,
             )?;
             clarity2_inner_type_check_type(
                 db,
@@ -906,7 +929,7 @@ fn clarity2_inner_type_check_type<T: CostTracker>(
                 &expected_inner_types.1,
                 depth + 1,
                 cost_tracker,
-                time_tracker,
+                resource_limiter,
             )?;
         }
         (
@@ -922,7 +945,7 @@ fn clarity2_inner_type_check_type<T: CostTracker>(
                     expected_list_type.get_list_item_type(),
                     depth + 1,
                     cost_tracker,
-                    time_tracker,
+                    resource_limiter,
                 )?;
             } else {
                 return Err(StaticCheckErrorKind::TypeError(
@@ -955,7 +978,7 @@ fn clarity2_inner_type_check_type<T: CostTracker>(
                             expected_field_type,
                             depth + 1,
                             cost_tracker,
-                            time_tracker,
+                            resource_limiter,
                         )?;
                     }
                     None => {
@@ -997,7 +1020,7 @@ fn clarity2_inner_type_check_type<T: CostTracker>(
                     &expected_trait,
                     depth,
                     cost_tracker,
-                    time_tracker,
+                    resource_limiter,
                 )?;
             }
         }
@@ -1054,7 +1077,7 @@ fn clarity2_inner_type_check_type<T: CostTracker>(
                     expected_type,
                     depth + 1,
                     cost_tracker,
-                    time_tracker,
+                    resource_limiter,
                 )?;
             }
         }
@@ -1135,7 +1158,7 @@ fn trait_type_size(
     trait_sig: &BTreeMap<ClarityName, FunctionSignature>,
 ) -> Result<u64, StaticCheckError> {
     let mut total_size = 0;
-    for (_func_name, value) in trait_sig.iter() {
+    for value in trait_sig.values() {
         total_size = total_size.cost_overflow_add(value.total_type_size()?)?;
     }
     Ok(total_size)
@@ -1191,7 +1214,7 @@ impl<'a, 'b> TypeChecker<'a, 'b> {
         contract_identifier: &QualifiedContractIdentifier,
         clarity_version: &ClarityVersion,
         build_type_map: bool,
-        time_tracker: TimeTracker,
+        resource_limiter: ResourceLimiter,
     ) -> TypeChecker<'a, 'b> {
         Self {
             epoch: *epoch,
@@ -1201,7 +1224,7 @@ impl<'a, 'b> TypeChecker<'a, 'b> {
             function_return_tracker: None,
             type_map: TypeMap::new(build_type_map),
             clarity_version: *clarity_version,
-            time_tracker,
+            resource_limiter,
         }
     }
 
@@ -1228,8 +1251,8 @@ impl<'a, 'b> TypeChecker<'a, 'b> {
         match self.function_return_tracker {
             Some(ref mut tracker) => {
                 let new_type = match tracker.take() {
-                    Some(expected_type) => TypeSignature::least_supertype(
-                        &StacksEpochId::Epoch21,
+                    Some(expected_type) => TypeSignature::least_supertype_for_analysis(
+                        &self.epoch,
                         &expected_type,
                         &return_type,
                     )
@@ -1316,8 +1339,8 @@ impl<'a, 'b> TypeChecker<'a, 'b> {
         expr: &SymbolicExpression,
         context: &TypingContext,
     ) -> Result<TypeSignature, StaticCheckError> {
-        // Per-node analysis deadline check (independent of cost accounting).
-        check_analysis_timeout(&self.time_tracker)?;
+        // Per-node analysis deadline and memory use check (independent of cost accounting).
+        check_analysis_resource_limits(&self.resource_limiter)?;
 
         runtime_cost(ClarityCostFunction::AnalysisVisit, self, 0)?;
 
@@ -1393,7 +1416,10 @@ impl<'a, 'b> TypeChecker<'a, 'b> {
         for (arg_ix, arg_expr) in args.iter().enumerate() {
             let arg_type = self.type_check(arg_expr, context)?;
             if check_result.is_ok() {
-                let (costs, result) = func_type.check_args_visitor_2_1(
+                let ArgumentCheckOutcome {
+                    cost: costs,
+                    result,
+                } = func_type.check_args_visitor_2_1(
                     self,
                     &arg_type,
                     arg_ix,
@@ -1524,8 +1550,8 @@ impl<'a, 'b> TypeChecker<'a, 'b> {
                     if let Some(Some(ref expected)) = self.function_return_tracker {
                         // check if the computed return type matches the return type
                         //   of any early exits from the call graph (e.g., (expects ...) calls)
-                        TypeSignature::least_supertype(
-                            &StacksEpochId::Epoch21,
+                        TypeSignature::least_supertype_for_analysis(
+                            &self.epoch,
                             expected,
                             &return_type,
                         )
@@ -1752,7 +1778,7 @@ impl<'a, 'b> TypeChecker<'a, 'b> {
             expected_type,
             1,
             &mut self.cost_track,
-            &self.time_tracker,
+            &self.resource_limiter,
         )?;
 
         // If we reach here with no errors, then the expression can be
@@ -1856,6 +1882,16 @@ impl<'a, 'b> TypeChecker<'a, 'b> {
             self.epoch,
             self.clarity_version,
         )?;
+
+        // Only a trait from a version where the name was still free unlocks it
+        // (see `is_shadowable_reserved`), so new traits must not declare one.
+        if self.epoch.allows_shadowable_reserved_names()
+            && let Some(method_name) = trait_signature
+                .keys()
+                .find(|name| is_reserved(name, &self.clarity_version))
+        {
+            return Err(StaticCheckErrorKind::NameAlreadyUsed(method_name.to_string()).into());
+        }
 
         Ok((trait_name.clone(), trait_signature))
     }
