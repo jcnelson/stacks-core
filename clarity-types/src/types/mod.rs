@@ -65,12 +65,11 @@ pub const WRAPPER_VALUE_SIZE: u32 = 1;
 /// cannot eat the whole message budget.
 pub const MAX_ERROR_VALUE_DISPLAY_LEN: usize = 512;
 
-#[derive(Debug, Clone, Eq, Hash, Serialize, Deserialize)]
 /// A Clarity value rendered for use in an error message, bounded by
 /// construction (see [`Value::to_error_string`]).
 pub type BoundedValueString = BoundedString<MAX_ERROR_VALUE_DISPLAY_LEN>;
 
-#[derive(Debug, Clone, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Eq, Hash, Serialize, Deserialize)]
 pub struct TupleData {
     // todo: remove type_signature
     pub type_signature: TupleTypeSignature,
@@ -82,7 +81,7 @@ pub struct BuffData {
     pub data: Vec<u8>,
 }
 
-#[derive(Debug, Clone, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Eq, Hash, Serialize, Deserialize)]
 pub struct ListData {
     pub data: Vec<Value>,
     // todo: remove type_signature
